@@ -1,3 +1,4 @@
+import { Client } from '@gradio/client';
 import { getActiveColabUrl } from '../utils/turboGpuConfig';
 import type {
   AnimationStyle,
@@ -253,13 +254,81 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
-async function generatePollinationsBrowserFallback(
-  prompt: string,
-  style: AnimationStyle,
-  aspectRatio: AspectRatio = '16:9',
+function withBrowserTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  timeoutMessage: string
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(timeoutMessage)), ms);
+    promise
+      .then((val) => {
+        window.clearTimeout(timer);
+        resolve(val);
+      })
+      .catch((err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+function extractBrowserGradioImageUrl(payload: unknown): string | null {
+  if (!payload) return null;
+  if (typeof payload === 'string') {
+    if (payload.startsWith('https://') || payload.startsWith('data:image/')) {
+      return payload;
+    }
+    return null;
+  }
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const found = extractBrowserGradioImageUrl(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof payload === 'object') {
+    const rec = payload as Record<string, unknown>;
+    if (typeof rec.url === 'string' && (rec.url.startsWith('https://') || rec.url.startsWith('data:image/'))) {
+      return rec.url;
+    }
+    if (rec.image) {
+      const im = extractBrowserGradioImageUrl(rec.image);
+      if (im) return im;
+    }
+    for (const val of Object.values(rec)) {
+      const found = extractBrowserGradioImageUrl(val);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+const HF_BROWSER_FLUX_SPACES = [
+  'black-forest-labs/FLUX.1-schnell',
+  'stabilityai/stable-diffusion-3.5-large-turbo',
+  'prodia/fast-stable-diffusion',
+];
+
+const HF_BROWSER_SDXL_SPACES = [
+  'stabilityai/stable-diffusion-3.5-large-turbo',
+  'black-forest-labs/FLUX.1-schnell',
+  'prodia/fast-stable-diffusion',
+];
+
+async function generateHfSpaceBrowserFallback(
+  payload: {
+    prompt: string;
+    style: AnimationStyle;
+    aspectRatio?: AspectRatio;
+    engine?: ImageEngine;
+    spaceId?: string;
+  },
   onProgress?: (event: HfVideoProgressEvent) => void
 ): Promise<{
   imageDataUrl: string;
+  imageUrl: string;
   spaceUsed: string;
   nodeLabel: string;
   provider?: 'cloudflare' | 'colab-turbo' | 'huggingface';
@@ -269,51 +338,131 @@ async function generatePollinationsBrowserFallback(
   height: number;
 }> {
   const started = Date.now();
-  const dims = CLIENT_DIMS_BY_RATIO[aspectRatio] ?? { w: 1024, h: 1024 };
-  const styleCue = CLIENT_STYLE_CUES[style] ?? `${style} aesthetic`;
-  const enhancedPrompt = `${prompt.trim().slice(0, 700)}, ${styleCue}, crisp detail, studio lighting, clean framing, no text, no watermark`;
-  const seed = Date.now();
-  const encoded = encodeURIComponent(enhancedPrompt);
+  const dims = CLIENT_DIMS_BY_RATIO[payload.aspectRatio ?? '16:9'] ?? { w: 1024, h: 1024 };
+  const styleCue = CLIENT_STYLE_CUES[payload.style] ?? `${payload.style} aesthetic`;
+  const enhancedPrompt = `${payload.prompt.trim().slice(0, 700)}, ${styleCue}, crisp detail, studio lighting, clean framing, no text, no watermark`;
 
-  onProgress?.({
-    type: 'status',
-    space: 'pollinations/flux-browser',
-    nodeLabel: 'Direct Browser Fallback',
-    provider: 'huggingface',
-    progress: 85,
-    translatedPrompt: enhancedPrompt,
-    message: 'Connecting directly from browser to open-source image engine...',
-  });
+  const useSdxl = payload.engine === 'sdxl';
+  const baseSpaces = useSdxl ? HF_BROWSER_SDXL_SPACES : HF_BROWSER_FLUX_SPACES;
+  const customSpace =
+    typeof payload.spaceId === 'string' && /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(payload.spaceId.trim())
+      ? payload.spaceId.trim()
+      : null;
+  const candidates = customSpace
+    ? [customSpace, ...baseSpaces.filter((s) => s !== customSpace)]
+    : baseSpaces;
 
-  const candidateUrls = [
-    `https://image.pollinations.ai/prompt/${encoded}?width=${dims.w}&height=${dims.h}&nologo=true&seed=${seed}`,
-    `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=1024&nologo=true&seed=${seed + 1}`,
-  ];
+  let lastErr = 'Public Hugging Face ZeroGPU Spaces are temporarily busy.';
 
-  let lastErr = 'Free open-source image endpoint did not respond in time.';
-  for (const url of candidateUrls) {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 30000);
+  for (let i = 0; i < candidates.length; i++) {
+    const spaceId = candidates[i];
+    const nodeLabel = `Hugging Face Browser Direct (${spaceId})`;
+    onProgress?.({
+      type: 'status',
+      space: spaceId,
+      nodeLabel,
+      provider: 'huggingface',
+      attempt: i + 1,
+      totalAttempts: candidates.length,
+      progress: Math.min(90, 70 + i * 10),
+      translatedPrompt: enhancedPrompt,
+      message: `Connecting directly in browser via WebSockets to ${spaceId}...`,
+    });
+
     try {
-      const res = await fetch(url, {
-        method: 'GET',
-        signal: controller.signal,
-      });
-      if (!res.ok) {
-        lastErr = `Direct fallback endpoint returned HTTP ${res.status}`;
+      const client = await withBrowserTimeout(
+        Client.connect(spaceId),
+        15000,
+        `${spaceId} WebSocket connection timed out.`
+      );
+      const api = await withBrowserTimeout(
+        client.view_api(),
+        10000,
+        `${spaceId} API inspection timed out.`
+      );
+
+      const namedEndpoints = Object.keys(api.named_endpoints ?? {});
+      const endpoint =
+        namedEndpoints.find((k) => /^\/?(infer|txt2img|generate|predict)$/i.test(k)) ??
+        namedEndpoints[0] ??
+        0;
+
+      const epInfo =
+        typeof endpoint === 'string'
+          ? api.named_endpoints?.[endpoint]
+          : api.unnamed_endpoints?.[0];
+      const paramsMeta = epInfo?.parameters ?? [];
+
+      const isSd35OrProdia =
+        spaceId.includes('stable-diffusion-3.5') || spaceId.includes('prodia');
+      const gradioPayload: Record<string, unknown> = {};
+
+      for (const p of paramsMeta) {
+        const name = p.parameter_name;
+        if (!name) continue;
+        const lower = name.toLowerCase();
+        if (
+          (lower === 'prompt' || lower === 'positive_prompt' || lower === 'text') &&
+          !lower.includes('negative')
+        ) {
+          gradioPayload[name] = enhancedPrompt;
+        } else if (lower.includes('negative')) {
+          gradioPayload[name] = 'text, watermark, signature, blurry, low quality, artifacts';
+        } else if (lower === 'randomize_seed') {
+          gradioPayload[name] = true;
+        } else if (lower === 'width') {
+          gradioPayload[name] = dims.w;
+        } else if (lower === 'height') {
+          gradioPayload[name] = dims.h;
+        } else if (lower === 'num_inference_steps' || lower === 'steps') {
+          gradioPayload[name] = isSd35OrProdia ? 8 : 4;
+        } else if (lower === 'guidance_scale' || lower === 'cfg' || lower === 'cfg_scale') {
+          gradioPayload[name] = isSd35OrProdia ? 1.5 : 0;
+        } else if (p.parameter_has_default) {
+          gradioPayload[name] = p.parameter_default;
+        }
+      }
+
+      const predResult = await withBrowserTimeout(
+        client.predict(
+          endpoint,
+          Object.keys(gradioPayload).length > 0 ? gradioPayload : [enhancedPrompt]
+        ),
+        42000,
+        `${spaceId} GPU queue timeout reached.`
+      );
+
+      const mediaUrl = extractBrowserGradioImageUrl(predResult.data);
+      if (!mediaUrl) {
+        lastErr = `${spaceId} did not return a valid image URL.`;
         continue;
       }
-      const blob = await res.blob();
-      if (!blob.size || (!blob.type.startsWith('image/') && blob.size < 256)) {
-        lastErr = 'Direct fallback returned invalid image bytes.';
-        continue;
+
+      let imageDataUrl = mediaUrl;
+      if (!mediaUrl.startsWith('data:image/')) {
+        try {
+          const imgRes = await withBrowserTimeout(
+            fetch(mediaUrl),
+            15000,
+            `${spaceId} image download timed out.`
+          );
+          if (imgRes.ok) {
+            const blob = await imgRes.blob();
+            if (blob.size > 64) {
+              imageDataUrl = await blobToDataUrl(blob);
+            }
+          }
+        } catch {
+          // Keep direct HTTPS URL if browser blob read fails
+        }
       }
-      const imageDataUrl = await blobToDataUrl(blob);
+
       const elapsedMs = Date.now() - started;
-      const result = {
+      const finalPayload = {
         imageDataUrl,
-        spaceUsed: 'pollinations/flux',
-        nodeLabel: 'Open-Source Direct Engine',
+        imageUrl: imageDataUrl,
+        spaceUsed: spaceId,
+        nodeLabel,
         provider: 'huggingface' as const,
         elapsedMs,
         translatedPrompt: enhancedPrompt,
@@ -322,18 +471,47 @@ async function generatePollinationsBrowserFallback(
       };
       onProgress?.({
         type: 'complete',
-        ...result,
+        ...finalPayload,
         progress: 100,
       });
-      return result;
+      return finalPayload;
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
-    } finally {
-      window.clearTimeout(timer);
     }
   }
 
   throw new Error(lastErr);
+}
+
+function normalizeServerImageResponse(
+  data: {
+    imageDataUrl?: string;
+    imageUrl?: string;
+    spaceUsed?: string;
+    nodeLabel?: string;
+    provider?: 'cloudflare' | 'colab-turbo' | 'huggingface';
+    elapsedMs?: number;
+    translatedPrompt?: string;
+    width?: number;
+    height?: number;
+  },
+  fallbackPrompt: string
+) {
+  const resolved = data.imageDataUrl || data.imageUrl || '';
+  if (!resolved) {
+    throw new Error('Image endpoint returned an empty image payload.');
+  }
+  return {
+    imageDataUrl: resolved,
+    imageUrl: resolved,
+    spaceUsed: data.spaceUsed ?? '@cf/black-forest-labs/flux-1-schnell',
+    nodeLabel: data.nodeLabel ?? data.spaceUsed ?? 'Cloudflare Workers AI',
+    provider: data.provider,
+    elapsedMs: data.elapsedMs,
+    translatedPrompt: data.translatedPrompt ?? fallbackPrompt,
+    width: data.width ?? 1024,
+    height: data.height ?? 1024,
+  };
 }
 
 export async function generateHfImage(
@@ -348,6 +526,7 @@ export async function generateHfImage(
   onProgress?: (event: HfVideoProgressEvent) => void
 ): Promise<{
   imageDataUrl: string;
+  imageUrl?: string;
   spaceUsed: string;
   nodeLabel: string;
   provider?: 'cloudflare' | 'colab-turbo' | 'huggingface';
@@ -367,16 +546,23 @@ export async function generateHfImage(
 
   if (!onProgress) {
     try {
-      return await postJson('/api/generate-image', requestBody);
+      const serverData = await postJson<{
+        imageDataUrl?: string;
+        imageUrl?: string;
+        spaceUsed?: string;
+        nodeLabel?: string;
+        provider?: 'cloudflare' | 'colab-turbo' | 'huggingface';
+        elapsedMs?: number;
+        translatedPrompt?: string;
+        width?: number;
+        height?: number;
+      }>('/api/generate-image', requestBody);
+      return normalizeServerImageResponse(serverData, payload.prompt);
     } catch (err) {
       if (err instanceof HttpApiError && err.status === 400) {
         throw err;
       }
-      return await generatePollinationsBrowserFallback(
-        payload.prompt,
-        payload.style,
-        payload.aspectRatio
-      );
+      return await generateHfSpaceBrowserFallback(payload);
     }
   }
 
@@ -396,17 +582,23 @@ export async function generateHfImage(
         throw new HttpApiError(400, msg);
       }
       try {
-        return await postJson('/api/generate-image', requestBody);
+        const serverData = await postJson<{
+          imageDataUrl?: string;
+          imageUrl?: string;
+          spaceUsed?: string;
+          nodeLabel?: string;
+          provider?: 'cloudflare' | 'colab-turbo' | 'huggingface';
+          elapsedMs?: number;
+          translatedPrompt?: string;
+          width?: number;
+          height?: number;
+        }>('/api/generate-image', requestBody);
+        return normalizeServerImageResponse(serverData, payload.prompt);
       } catch (jsonErr) {
         if (jsonErr instanceof HttpApiError && jsonErr.status === 400) {
           throw jsonErr;
         }
-        return await generatePollinationsBrowserFallback(
-          payload.prompt,
-          payload.style,
-          payload.aspectRatio,
-          onProgress
-        );
+        return await generateHfSpaceBrowserFallback(payload, onProgress);
       }
     }
 
@@ -415,6 +607,7 @@ export async function generateHfImage(
     let buffer = '';
     let finalResult: {
       imageDataUrl: string;
+      imageUrl: string;
       spaceUsed: string;
       nodeLabel: string;
       provider?: 'cloudflare' | 'colab-turbo' | 'huggingface';
@@ -435,13 +628,15 @@ export async function generateHfImage(
         const dataLine = chunk.split('\n').find((l) => l.startsWith('data: '));
         if (!dataLine) continue;
         const evt = JSON.parse(dataLine.slice(6)) as HfVideoProgressEvent;
-        onProgress(evt);
         if (evt.type === 'error') {
-          throw new Error(evt.error || 'Image generation failed on GPU node.');
+          throw new Error(evt.error || 'Image generation failed on server GPU node.');
         }
-        if (evt.type === 'complete' && evt.imageDataUrl) {
+        onProgress(evt);
+        const resolvedImg = evt.imageDataUrl || (evt as { imageUrl?: string }).imageUrl;
+        if (evt.type === 'complete' && resolvedImg) {
           finalResult = {
-            imageDataUrl: evt.imageDataUrl,
+            imageDataUrl: resolvedImg,
+            imageUrl: resolvedImg,
             spaceUsed: evt.spaceUsed ?? '@cf/black-forest-labs/flux-1-schnell',
             nodeLabel: evt.nodeLabel ?? evt.spaceUsed ?? 'Turbo GPU Node',
             provider: evt.provider,
@@ -462,26 +657,27 @@ export async function generateHfImage(
       throw streamErr;
     }
     try {
-      return await postJson('/api/generate-image', requestBody);
+      const serverData = await postJson<{
+        imageDataUrl?: string;
+        imageUrl?: string;
+        spaceUsed?: string;
+        nodeLabel?: string;
+        provider?: 'cloudflare' | 'colab-turbo' | 'huggingface';
+        elapsedMs?: number;
+        translatedPrompt?: string;
+        width?: number;
+        height?: number;
+      }>('/api/generate-image', requestBody);
+      return normalizeServerImageResponse(serverData, payload.prompt);
     } catch (jsonErr) {
       if (jsonErr instanceof HttpApiError && jsonErr.status === 400) {
         throw jsonErr;
       }
-      return await generatePollinationsBrowserFallback(
-        payload.prompt,
-        payload.style,
-        payload.aspectRatio,
-        onProgress
-      );
+      return await generateHfSpaceBrowserFallback(payload, onProgress);
     }
   }
 
-  return await generatePollinationsBrowserFallback(
-    payload.prompt,
-    payload.style,
-    payload.aspectRatio,
-    onProgress
-  );
+  return await generateHfSpaceBrowserFallback(payload, onProgress);
 }
 
 export function generateHfCharacterImage(

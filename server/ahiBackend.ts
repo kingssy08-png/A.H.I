@@ -903,54 +903,6 @@ async function runDirectHuggingFaceImage(
   throw new Error(lastErr);
 }
 
-async function runPollinationsFreeImage(
-  fullPrompt: string,
-  dims: { w: number; h: number }
-): Promise<{ imageDataUrl: string; elapsedMs: number }> {
-  const started = Date.now();
-  const clampedW = Math.min(1280, Math.max(512, dims.w));
-  const clampedH = Math.min(1280, Math.max(512, dims.h));
-  const seed = Math.floor(Math.random() * 1_000_000_000);
-  const encodedPrompt = encodeURIComponent(fullPrompt.slice(0, 900));
-
-  const urls = [
-    `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${clampedW}&height=${clampedH}&nologo=true&seed=${seed}&model=flux`,
-    `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}`,
-  ];
-
-  let lastErr = 'Free open-source image endpoint unavailable';
-  for (const url of urls) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20000);
-    try {
-      const res = await fetch(url, {
-        method: 'GET',
-        headers: { Accept: 'image/*' },
-        signal: controller.signal,
-      });
-      if (!res.ok) {
-        lastErr = `Pollinations returned HTTP ${res.status}`;
-        continue;
-      }
-      const buf = Buffer.from(await res.arrayBuffer());
-      const mime = detectImageBufferMime(buf, res.headers.get('content-type') || '');
-      if (mime && buf.length > 100) {
-        return {
-          imageDataUrl: `data:${mime};base64,${buf.toString('base64')}`,
-          elapsedMs: Date.now() - started,
-        };
-      }
-      lastErr = 'Pollinations returned invalid image data';
-    } catch (err) {
-      lastErr = err instanceof Error ? err.message : String(err);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  throw new Error(lastErr);
-}
-
 function resolveImageInputToBuffer(
   imageInput: string
 ): { buffer: Buffer; mimeType: string } | null {
@@ -1585,8 +1537,8 @@ async function runResilientImageGeneration(
       ? options.spaceId.trim()
       : null;
 
-  // On Vercel, skip slow public Gradio discovery/queues unless user explicitly asked for a spaceId,
-  // so Cloudflare -> Direct HF Inference -> Pollinations finishes well within serverless limits.
+  // On Vercel, skip slow public Gradio discovery/queues unless user explicitly asked for a spaceId;
+  // browser fallback connects directly over WebSockets via @gradio/client if server nodes are unavailable.
   const shouldUseGradioSpaces = !process.env.VERCEL || Boolean(customSpace);
   const liveSpaces = shouldUseGradioSpaces ? await discoverRunningImageSpaces(useSdxl) : [];
   const hfCandidates = customSpace
@@ -1598,12 +1550,10 @@ async function runResilientImageGeneration(
       : 0
     : hfCandidates.length;
 
-  const totalSteps =
-    (validColab ? 1 : 0) +
-    (cfCreds ? 1 : 0) +
-    (hfToken ? 1 : 0) +
-    maxGradioAttempts +
-    1;
+  const totalSteps = Math.max(
+    1,
+    (validColab ? 1 : 0) + (cfCreds ? 1 : 0) + (hfToken ? 1 : 0) + maxGradioAttempts
+  );
   let stepNum = 0;
   let lastError = `Primary ${useSdxl ? 'SDXL / SD 3.5' : 'Flux.1'} nodes unavailable`;
 
@@ -1753,35 +1703,7 @@ async function runResilientImageGeneration(
     }
   }
 
-  stepNum++;
-  onStatus?.({
-    space: 'pollinations/flux',
-    nodeLabel: 'Open-Source Free Fallback',
-    provider: 'huggingface',
-    attempt: stepNum,
-    totalAttempts: totalSteps,
-    progress: 86,
-    translatedPrompt: fullPrompt,
-    message: `Routing to free open-source fallback (${lastError})...`,
-  });
-
-  try {
-    const freeRes = await runPollinationsFreeImage(fullPrompt, dims);
-    return {
-      imageDataUrl: freeRes.imageDataUrl,
-      spaceUsed: 'pollinations/flux',
-      nodeLabel: 'Open-Source Free Fallback',
-      provider: 'huggingface',
-      elapsedMs: freeRes.elapsedMs,
-      translatedPrompt: fullPrompt,
-      width: dims.w,
-      height: dims.h,
-    };
-  } catch (err) {
-    lastError = `${lastError}; fallback: ${err instanceof Error ? err.message : String(err)}`;
-  }
-
-  throw new Error(`All image generation providers failed (${lastError}). Please retry shortly.`);
+  throw new Error(`Server image providers unavailable (${lastError}).`);
 }
 
 function sanitizeSvgMarkup(rawSvg: string, width: number, height: number): string {
@@ -2691,7 +2613,7 @@ export async function handleGenerateImageRequest(
               sendEvent({ type: 'status', ...statusEvt });
             }
           );
-          sendEvent({ type: 'complete', ...result });
+          sendEvent({ type: 'complete', ...result, imageUrl: result.imageDataUrl });
         } catch (err) {
           sendEvent({
             type: 'error',
@@ -2710,7 +2632,7 @@ export async function handleGenerateImageRequest(
         spaceId: typeof spaceId === 'string' ? spaceId : undefined,
         colabUrl: typeof colabUrl === 'string' ? colabUrl : undefined,
       });
-      return Response.json(result);
+      return Response.json({ ...result, imageUrl: result.imageDataUrl });
     } catch (err) {
       return Response.json(
         {

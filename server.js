@@ -712,47 +712,6 @@ async function runDirectHuggingFaceImage(fullPrompt, dims, useSdxl, hfToken) {
   }
   throw new Error(lastErr);
 }
-async function runPollinationsFreeImage(fullPrompt, dims) {
-  const started = Date.now();
-  const clampedW = Math.min(1280, Math.max(512, dims.w));
-  const clampedH = Math.min(1280, Math.max(512, dims.h));
-  const seed = Math.floor(Math.random() * 1e9);
-  const encodedPrompt = encodeURIComponent(fullPrompt.slice(0, 900));
-  const urls = [
-    `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${clampedW}&height=${clampedH}&nologo=true&seed=${seed}&model=flux`,
-    `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}`
-  ];
-  let lastErr = "Free open-source image endpoint unavailable";
-  for (const url of urls) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2e4);
-    try {
-      const res = await fetch(url, {
-        method: "GET",
-        headers: { Accept: "image/*" },
-        signal: controller.signal
-      });
-      if (!res.ok) {
-        lastErr = `Pollinations returned HTTP ${res.status}`;
-        continue;
-      }
-      const buf = Buffer2.from(await res.arrayBuffer());
-      const mime = detectImageBufferMime(buf, res.headers.get("content-type") || "");
-      if (mime && buf.length > 100) {
-        return {
-          imageDataUrl: `data:${mime};base64,${buf.toString("base64")}`,
-          elapsedMs: Date.now() - started
-        };
-      }
-      lastErr = "Pollinations returned invalid image data";
-    } catch (err) {
-      lastErr = err instanceof Error ? err.message : String(err);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  throw new Error(lastErr);
-}
 function resolveImageInputToBuffer(imageInput) {
   if (imageInput.startsWith("data:image/")) {
     const match = imageInput.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
@@ -1188,7 +1147,10 @@ async function runResilientImageGeneration(options, onStatus) {
   const liveSpaces = shouldUseGradioSpaces ? await discoverRunningImageSpaces(useSdxl) : [];
   const hfCandidates = customSpace ? [customSpace, ...liveSpaces.filter((s) => s !== customSpace)] : liveSpaces;
   const maxGradioAttempts = process.env.VERCEL ? customSpace ? 1 : 0 : hfCandidates.length;
-  const totalSteps = (validColab ? 1 : 0) + (cfCreds ? 1 : 0) + (hfToken ? 1 : 0) + maxGradioAttempts + 1;
+  const totalSteps = Math.max(
+    1,
+    (validColab ? 1 : 0) + (cfCreds ? 1 : 0) + (hfToken ? 1 : 0) + maxGradioAttempts
+  );
   let stepNum = 0;
   let lastError = `Primary ${useSdxl ? "SDXL / SD 3.5" : "Flux.1"} nodes unavailable`;
   if (validColab) {
@@ -1323,33 +1285,7 @@ async function runResilientImageGeneration(options, onStatus) {
       lastError = err instanceof Error ? err.message : String(err);
     }
   }
-  stepNum++;
-  onStatus?.({
-    space: "pollinations/flux",
-    nodeLabel: "Open-Source Free Fallback",
-    provider: "huggingface",
-    attempt: stepNum,
-    totalAttempts: totalSteps,
-    progress: 86,
-    translatedPrompt: fullPrompt,
-    message: `Routing to free open-source fallback (${lastError})...`
-  });
-  try {
-    const freeRes = await runPollinationsFreeImage(fullPrompt, dims);
-    return {
-      imageDataUrl: freeRes.imageDataUrl,
-      spaceUsed: "pollinations/flux",
-      nodeLabel: "Open-Source Free Fallback",
-      provider: "huggingface",
-      elapsedMs: freeRes.elapsedMs,
-      translatedPrompt: fullPrompt,
-      width: dims.w,
-      height: dims.h
-    };
-  } catch (err) {
-    lastError = `${lastError}; fallback: ${err instanceof Error ? err.message : String(err)}`;
-  }
-  throw new Error(`All image generation providers failed (${lastError}). Please retry shortly.`);
+  throw new Error(`Server image providers unavailable (${lastError}).`);
 }
 function sanitizeSvgMarkup(rawSvg, width, height) {
   let svg = String(rawSvg || "").trim();
@@ -2085,7 +2021,7 @@ async function handleGenerateImageRequest(request, forceStream) {
               sendEvent({ type: "status", ...statusEvt });
             }
           );
-          sendEvent({ type: "complete", ...result });
+          sendEvent({ type: "complete", ...result, imageUrl: result.imageDataUrl });
         } catch (err) {
           sendEvent({
             type: "error",
@@ -2103,7 +2039,7 @@ async function handleGenerateImageRequest(request, forceStream) {
         spaceId: typeof spaceId === "string" ? spaceId : void 0,
         colabUrl: typeof colabUrl === "string" ? colabUrl : void 0
       });
-      return Response.json(result);
+      return Response.json({ ...result, imageUrl: result.imageDataUrl });
     } catch (err) {
       return Response.json(
         {
