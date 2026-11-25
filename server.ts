@@ -1349,11 +1349,20 @@ export function createApiApp() {
   app.use(express.json({ limit: '25mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
+    const hasApiKey = Boolean(process.env.GEMINI_API_KEY?.trim());
+    const hasCloudflareAi = Boolean(getCloudflareCredentials());
+    const hasHfToken = Boolean(getHfToken());
+    const missingEnv: string[] = [];
+    if (!hasApiKey) missingEnv.push('GEMINI_API_KEY');
+    if (!hasHfToken) missingEnv.push('HF_TOKEN');
+    if (!hasCloudflareAi) missingEnv.push('CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN');
+
     res.json({
       ok: true,
-      hasApiKey: Boolean(process.env.GEMINI_API_KEY?.trim()),
-      hasCloudflareAi: Boolean(getCloudflareCredentials()),
-      hasHfToken: Boolean(getHfToken()),
+      hasApiKey,
+      hasCloudflareAi,
+      hasHfToken,
+      missingEnv,
     });
   });
 
@@ -3433,6 +3442,13 @@ function sanitizeSvgMarkup(rawSvg: string, width: number, height: number): strin
       });
       res.end();
     }
+  });
+
+  // Explicit JSON 404 for unknown /api/* paths so API requests never fall back to HTML
+  app.all('/api/*', (req: Request, res: Response) => {
+    res.status(404).json({
+      error: `API endpoint not found: ${req.method} ${req.originalUrl || req.path}`,
+    });
   });
 
   // Structured JSON Error Handler for all /api/* routes (prevents unhandled HTML 500 crashes)
