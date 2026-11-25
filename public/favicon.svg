@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <radialGradient id="bg-glow" cx="50%" cy="32%" r="65%">
+      <stop offset="0%" stop-color="#11222A" />
+      <stop offset="55%" stop-color="#090D16" />
+      <stop offset="100%" stop-color="#07090E" />
+    </radialGradient>
+    <linearGradient id="frosted-border" x1="24" y1="24" x2="488" y2="488" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.32" />
+      <stop offset="45%" stop-color="#2DD4BF" stop-opacity="0.24" />
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.10" />
+    </linearGradient>
+    <linearGradient id="mint-cyan" x1="96" y1="184" x2="416" y2="340" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#5EEAD4" />
+      <stop offset="50%" stop-color="#2DD4BF" />
+      <stop offset="100%" stop-color="#34D399" />
+    </linearGradient>
+    <filter id="mint-glow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="#2DD4BF" flood-opacity="0.65" />
+    </filter>
+  </defs>
+
+  <!-- Rounded Matte-Obsidian Card -->
+  <rect x="14" y="14" width="484" height="484" rx="112" fill="url(#bg-glow)" />
+
+  <!-- Subtle Frosted Top Sheen -->
+  <path
+    d="M126 16H386C446.751 16 496 65.2487 496 126V170C410 132 328 118 256 118C184 118 102 132 16 170V126C16 65.2487 65.2487 16 126 16Z"
+    fill="#FFFFFF"
+    fill-opacity="0.035"
+  />
+
+  <!-- Frosted Glass Border -->
+  <rect
+    x="16"
+    y="16"
+    width="480"
+    height="480"
+    rx="110"
+    stroke="url(#frosted-border)"
+    stroke-width="6"
+  />
+  <rect
+    x="26"
+    y="26"
+    width="460"
+    height="460"
+    rx="100"
+    stroke="#FFFFFF"
+    stroke-opacity="0.06"
+    stroke-width="2"
+  />
+
+  <!-- Subtle Geometric Cinema Frame Accent -->
+  <path
+    d="M256 58L428 157V355L256 454L84 355V157L256 58Z"
+    stroke="#2DD4BF"
+    stroke-opacity="0.16"
+    stroke-width="3"
+    fill="#2DD4BF"
+    fill-opacity="0.025"
+  />
+
+  <!-- Glowing Geometric A.H.I Monogram -->
+  <g filter="url(#mint-glow)">
+    <!-- Geometric 'A' -->
+    <path
+      d="M94 318L142 186H164L212 318H184L153 224L122 318H94Z"
+      fill="url(#mint-cyan)"
+    />
+    <rect x="131" y="274" width="44" height="16" rx="6" fill="#F8FAFC" />
+
+    <!-- Precision Separator Dot -->
+    <circle cx="222" cy="306" r="10" fill="#2DD4BF" />
+
+    <!-- Geometric 'H' -->
+    <rect x="244" y="186" width="23" height="132" rx="8" fill="url(#mint-cyan)" />
+    <rect x="309" y="186" width="23" height="132" rx="8" fill="url(#mint-cyan)" />
+    <rect x="261" y="243" width="54" height="18" rx="4" fill="#F8FAFC" />
+
+    <!-- Precision Separator Dot -->
+    <circle cx="352" cy="306" r="10" fill="#2DD4BF" />
+
+    <!-- Geometric 'I' -->
+    <rect x="372" y="186" width="48" height="20" rx="7" fill="url(#mint-cyan)" />
+    <rect x="384.5" y="196" width="23" height="112" rx="6" fill="url(#mint-cyan)" />
+    <rect x="372" y="298" width="48" height="20" rx="7" fill="url(#mint-cyan)" />
+
+    <!-- Subtle Cinema Horizon Accent -->
+    <path
+      d="M148 358C188 370 324 370 364 358"
+      stroke="#2DD4BF"
+      stroke-opacity="0.72"
+      stroke-width="6"
+      stroke-linecap="round"
+    />
+  </g>
+</svg>

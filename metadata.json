@@ -1,0 +1,6 @@
+{
+  "name": "KinoForge Studio",
+  "description": "Dark-mode AI Video & Animation Studio with Gemini-powered scene-by-scene scriptwriting, character library, voice & music studio, and animatic video export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

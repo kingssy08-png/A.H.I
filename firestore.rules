@@ -1,0 +1,409 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default-deny catch-all first
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ── Hardened Global Helpers ──────────────────────────────────────────────
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function hasWorkspaceParent(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId))
+        && get(/databases/$(database)/documents/users/$(userId)).data.uid == request.auth.uid;
+    }
+
+    function isValidStyle(style) {
+      return style is string
+        && style.size() >= 1
+        && style.size() <= 40
+        && style in [
+          '3D Pixar-Style Cartoon',
+          'Anime',
+          'Cinematic Film',
+          '2D Illustration',
+          'Music Video',
+          'Product Ad',
+          'Realistic',
+          '3D Cartoon',
+          'Educational'
+        ];
+    }
+
+    function isValidAspectRatio(ratio) {
+      return ratio is string
+        && ratio.size() >= 3
+        && ratio.size() <= 10
+        && ratio in ['16:9', '9:16', '1:1', '21:9'];
+    }
+
+    function isValidVoiceName(voice) {
+      return voice is string
+        && voice.size() >= 1
+        && voice.size() <= 32
+        && voice in ['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'];
+    }
+
+    function isValidTargetAge(age) {
+      return age is string
+        && age.size() <= 40
+        && age in [
+          'Ages 3-5 (Preschool)',
+          'Ages 6-8 (Early Kids)',
+          'Ages 9-12 (Tween Adventure)',
+          'All-Ages Family'
+        ];
+    }
+
+    function isStringListWithin(listVal, maxItems, maxItemLen) {
+      return listVal is list
+        && listVal.size() <= maxItems
+        && (listVal.size() == 0 || (listVal[0] is string && listVal[0].size() <= maxItemLen));
+    }
+
+    function isMapListWithin(listVal, maxItems) {
+      return listVal is list
+        && listVal.size() <= maxItems
+        && (listVal.size() == 0 || listVal[0] is map);
+    }
+
+    // ── Validation Blueprints (Anti-Update-Gap) ─────────────────────────────
+    function isValidUserWorkspaceProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'photoUrl', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'photoUrl', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.uid == userId
+        && data.uid == request.auth.uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && data.photoUrl is string && data.photoUrl.size() <= 512
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidShowBible(data, userId, bibleId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'showTitle', 'visualStyle', 'lockVisualStyle',
+          'worldSetting', 'targetAgeGroup', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'showTitle', 'visualStyle', 'lockVisualStyle',
+          'worldSetting', 'targetAgeGroup', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == bibleId
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && data.showTitle is string && data.showTitle.size() >= 1 && data.showTitle.size() <= 120
+        && isValidStyle(data.visualStyle)
+        && data.lockVisualStyle is bool
+        && data.worldSetting is string && data.worldSetting.size() <= 1200
+        && isValidTargetAge(data.targetAgeGroup)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStudioProject(data, userId, projectId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'title', 'logline', 'storyIdea', 'style', 'aspectRatio',
+          'styleNotes', 'suggestedMusicMood', 'selectedMusicId', 'characterIds',
+          'scenes', 'thumbnailUrl', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'title', 'seriesTitle', 'seasonNumber', 'episodeNumber',
+          'targetAgeGroup', 'logline', 'storyIdea', 'style', 'aspectRatio',
+          'styleNotes', 'suggestedMusicMood', 'selectedMusicId', 'characterIds',
+          'scenes', 'thumbnailUrl', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == projectId
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && (!('seriesTitle' in data) || (data.seriesTitle is string && data.seriesTitle.size() <= 120))
+        && (!('seasonNumber' in data) || (data.seasonNumber is int && data.seasonNumber >= 1 && data.seasonNumber <= 50))
+        && (!('episodeNumber' in data) || (data.episodeNumber is int && data.episodeNumber >= 1 && data.episodeNumber <= 200))
+        && (!('targetAgeGroup' in data) || isValidTargetAge(data.targetAgeGroup))
+        && data.logline is string && data.logline.size() <= 600
+        && data.storyIdea is string && data.storyIdea.size() <= 2000
+        && isValidStyle(data.style)
+        && isValidAspectRatio(data.aspectRatio)
+        && data.styleNotes is string && data.styleNotes.size() <= 500
+        && data.suggestedMusicMood is string && data.suggestedMusicMood.size() <= 120
+        && data.selectedMusicId is string && data.selectedMusicId.size() <= 128
+        && isStringListWithin(data.characterIds, 20, 128)
+        && isMapListWithin(data.scenes, 24)
+        && data.thumbnailUrl is string && data.thumbnailUrl.size() <= 200000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStudioCharacter(data, userId, characterId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'name', 'role', 'styleAffinity', 'appearancePrompt',
+          'personalityTraits', 'voiceName', 'voiceStyle', 'signatureProps',
+          'colorPalette', 'avatarUrl', 'avatarSource', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'name', 'role', 'styleAffinity', 'appearancePrompt',
+          'personalityTraits', 'voiceName', 'voiceStyle', 'voiceArchetype',
+          'voicePreset', 'voicePitch', 'voiceSpeed', 'lockedVoice',
+          'signatureProps', 'colorPalette', 'avatarUrl', 'avatarSource',
+          'expressionSheet', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == characterId
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.role is string && data.role.size() <= 80
+        && isValidStyle(data.styleAffinity)
+        && data.appearancePrompt is string && data.appearancePrompt.size() <= 1000
+        && isStringListWithin(data.personalityTraits, 10, 64)
+        && isValidVoiceName(data.voiceName)
+        && data.voiceStyle is string && data.voiceStyle.size() <= 200
+        && (!('voiceArchetype' in data) || (data.voiceArchetype is string && data.voiceArchetype.size() <= 64))
+        && (!('voicePreset' in data) || (data.voicePreset is string && data.voicePreset.size() <= 16 && data.voicePreset in ['male', 'female', 'cartoon', 'mentor', 'bright']))
+        && (!('voicePitch' in data) || (data.voicePitch is number && data.voicePitch >= 0.5 && data.voicePitch <= 2.0))
+        && (!('voiceSpeed' in data) || (data.voiceSpeed is number && data.voiceSpeed >= 0.5 && data.voiceSpeed <= 2.0))
+        && (!('lockedVoice' in data) || data.lockedVoice is bool)
+        && data.signatureProps is string && data.signatureProps.size() <= 300
+        && isStringListWithin(data.colorPalette, 8, 32)
+        && data.avatarUrl is string && data.avatarUrl.size() <= 250000
+        && data.avatarSource is string && data.avatarSource.size() <= 16
+        && data.avatarSource in ['studio', 'flux', 'upload']
+        && (!('expressionSheet' in data) || isMapListWithin(data.expressionSheet, 4))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStudioCreation(data, userId, creationId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'mode', 'prompt', 'style', 'aspectRatio', 'mediaUrl', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'mode', 'prompt', 'style', 'aspectRatio', 'mediaUrl', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == creationId
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && data.mode is string && data.mode.size() <= 16 && data.mode in ['image', 'video']
+        && data.prompt is string && data.prompt.size() >= 1 && data.prompt.size() <= 1500
+        && data.style is string && data.style.size() >= 1 && data.style.size() <= 40
+        && isValidAspectRatio(data.aspectRatio)
+        && data.mediaUrl is string && data.mediaUrl.size() <= 300000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // ── /users/{userId} Workspace Root ──────────────────────────────────────
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+
+      allow create: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUserWorkspaceProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUserWorkspaceProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Update Creator Profile
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoUrl', 'updatedAt'])
+        );
+
+      allow delete: if isValidId(userId)
+        && isOwner(userId)
+        && existing().uid == request.auth.uid;
+
+      // ── /users/{userId}/showBibles/{bibleId} ─────────────────────────────
+      match /showBibles/{bibleId} {
+        allow get: if isValidId(userId) && isValidId(bibleId) && isOwner(userId) && (resource == null || existing().ownerId == request.auth.uid);
+        allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
+
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(bibleId)
+          && isValidShowBible(incoming(), userId, bibleId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && hasWorkspaceParent(userId);
+
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(bibleId)
+          && isValidShowBible(incoming(), userId, bibleId)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && hasWorkspaceParent(userId)
+          && (
+            // Action: Update Series Show Bible
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'showTitle', 'visualStyle', 'lockVisualStyle', 'worldSetting',
+              'targetAgeGroup', 'updatedAt'
+            ])
+          );
+
+        allow delete: if isValidId(userId)
+          && isValidId(bibleId)
+          && isOwner(userId)
+          && existing().ownerId == request.auth.uid
+          && hasWorkspaceParent(userId);
+      }
+
+      // ── /users/{userId}/projects/{projectId} ──────────────────────────────
+      match /projects/{projectId} {
+        allow get: if isValidId(userId) && isValidId(projectId) && isOwner(userId) && (resource == null || existing().ownerId == request.auth.uid);
+        allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
+
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(projectId)
+          && isValidStudioProject(incoming(), userId, projectId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && hasWorkspaceParent(userId);
+
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(projectId)
+          && isValidStudioProject(incoming(), userId, projectId)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && hasWorkspaceParent(userId)
+          && (
+            // Action: Edit Metadata & Cast
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'seriesTitle', 'seasonNumber', 'episodeNumber', 'targetAgeGroup',
+              'logline', 'storyIdea', 'style', 'aspectRatio', 'styleNotes',
+              'suggestedMusicMood', 'selectedMusicId', 'characterIds', 'thumbnailUrl', 'updatedAt'
+            ])
+            ||
+            // Action: Save Storyboard & Scene Updates
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'seriesTitle', 'seasonNumber', 'episodeNumber', 'targetAgeGroup',
+              'logline', 'storyIdea', 'style', 'aspectRatio', 'styleNotes',
+              'suggestedMusicMood', 'selectedMusicId', 'characterIds', 'scenes', 'thumbnailUrl', 'updatedAt'
+            ])
+          );
+
+        allow delete: if isValidId(userId)
+          && isValidId(projectId)
+          && isOwner(userId)
+          && existing().ownerId == request.auth.uid
+          && hasWorkspaceParent(userId);
+      }
+
+      // ── /users/{userId}/characters/{characterId} ──────────────────────────
+      match /characters/{characterId} {
+        allow get: if isValidId(userId) && isValidId(characterId) && isOwner(userId) && (resource == null || existing().ownerId == request.auth.uid);
+        allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
+
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(characterId)
+          && isValidStudioCharacter(incoming(), userId, characterId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && hasWorkspaceParent(userId);
+
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(characterId)
+          && isValidStudioCharacter(incoming(), userId, characterId)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && hasWorkspaceParent(userId)
+          && (
+            // Action: Update Character Details, Voice Lock & Expression Sheet
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'role', 'styleAffinity', 'appearancePrompt', 'personalityTraits',
+              'voiceName', 'voiceStyle', 'voiceArchetype', 'voicePreset',
+              'voicePitch', 'voiceSpeed', 'lockedVoice', 'signatureProps',
+              'colorPalette', 'avatarUrl', 'avatarSource', 'expressionSheet', 'updatedAt'
+            ])
+          );
+
+        allow delete: if isValidId(userId)
+          && isValidId(characterId)
+          && isOwner(userId)
+          && existing().ownerId == request.auth.uid
+          && hasWorkspaceParent(userId);
+      }
+
+      // ── /users/{userId}/creations/{creationId} ────────────────────────────
+      match /creations/{creationId} {
+        allow get: if isValidId(userId) && isValidId(creationId) && isOwner(userId) && (resource == null || existing().ownerId == request.auth.uid);
+        allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
+
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(creationId)
+          && isValidStudioCreation(incoming(), userId, creationId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && hasWorkspaceParent(userId);
+
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(creationId)
+          && isValidStudioCreation(incoming(), userId, creationId)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && hasWorkspaceParent(userId)
+          && (
+            // Action: Update Creation Preview or Prompt
+            incoming().diff(existing()).affectedKeys().hasOnly(['prompt', 'mediaUrl', 'updatedAt'])
+          );
+
+        allow delete: if isValidId(userId)
+          && isValidId(creationId)
+          && isOwner(userId)
+          && existing().ownerId == request.auth.uid
+          && hasWorkspaceParent(userId);
+      }
+    }
+  }
+}

@@ -1,0 +1,508 @@
+{
+  "entities": {
+    "UserWorkspaceProfile": {
+      "title": "UserWorkspaceProfile",
+      "description": "Private owner-only workspace root document for an A.H.I Studio creator.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the workspace owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Creator display name shown in the studio profile button.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "Optional short avatar URL (or empty string).",
+          "minLength": 0,
+          "maxLength": 512
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the workspace was initialized."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest profile update."
+        }
+      },
+      "required": ["uid", "displayName", "photoUrl", "createdAt", "updatedAt"]
+    },
+    "ShowBible": {
+      "title": "ShowBible",
+      "description": "Series memory document storing show title, locked visual style, world setting, and target age group.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Document identifier matching the Show Bible ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the creator who owns this Show Bible.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "showTitle": {
+          "type": "string",
+          "description": "Series title.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "visualStyle": {
+          "type": "string",
+          "description": "Series visual style.",
+          "enum": [
+            "3D Pixar-Style Cartoon",
+            "Anime",
+            "Cinematic Film",
+            "2D Illustration",
+            "Music Video",
+            "Product Ad",
+            "Realistic",
+            "3D Cartoon",
+            "Educational"
+          ],
+          "maxLength": 40
+        },
+        "lockVisualStyle": {
+          "type": "boolean",
+          "description": "Whether new episodes lock to visualStyle."
+        },
+        "worldSetting": {
+          "type": "string",
+          "description": "Series world setting and recurring tone.",
+          "minLength": 0,
+          "maxLength": 1200
+        },
+        "targetAgeGroup": {
+          "type": "string",
+          "description": "Target audience age group.",
+          "enum": [
+            "Ages 3-5 (Preschool)",
+            "Ages 6-8 (Early Kids)",
+            "Ages 9-12 (Tween Adventure)",
+            "All-Ages Family"
+          ],
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the Show Bible was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest Show Bible edit."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "showTitle",
+        "visualStyle",
+        "lockVisualStyle",
+        "worldSetting",
+        "targetAgeGroup",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "StudioProject": {
+      "title": "StudioProject",
+      "description": "Private storyboard and video project saved in a creator's Firestore workspace.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Document identifier matching the project ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the creator who owns this project.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Project or episode title.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "seriesTitle": {
+          "type": "string",
+          "description": "Optional series name for grouping episodes.",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "seasonNumber": {
+          "type": "integer",
+          "description": "Season number (1-50)."
+        },
+        "episodeNumber": {
+          "type": "integer",
+          "description": "Episode number (1-200)."
+        },
+        "targetAgeGroup": {
+          "type": "string",
+          "description": "Target audience age group.",
+          "minLength": 0,
+          "maxLength": 40
+        },
+        "logline": {
+          "type": "string",
+          "description": "Short summary logline.",
+          "minLength": 0,
+          "maxLength": 600
+        },
+        "storyIdea": {
+          "type": "string",
+          "description": "User's original story prompt or premise.",
+          "minLength": 0,
+          "maxLength": 2000
+        },
+        "style": {
+          "type": "string",
+          "description": "Visual style preset.",
+          "enum": [
+            "3D Pixar-Style Cartoon",
+            "Anime",
+            "Cinematic Film",
+            "2D Illustration",
+            "Music Video",
+            "Product Ad",
+            "Realistic",
+            "3D Cartoon",
+            "Educational"
+          ],
+          "maxLength": 40
+        },
+        "aspectRatio": {
+          "type": "string",
+          "description": "Output aspect ratio.",
+          "enum": ["16:9", "9:16", "1:1", "21:9"],
+          "maxLength": 10
+        },
+        "styleNotes": {
+          "type": "string",
+          "description": "Art direction notes.",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "suggestedMusicMood": {
+          "type": "string",
+          "description": "Suggested soundtrack mood.",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "selectedMusicId": {
+          "type": "string",
+          "description": "Selected background music preset ID.",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "characterIds": {
+          "type": "array",
+          "description": "Bounded list of attached character IDs (max 20)."
+        },
+        "scenes": {
+          "type": "array",
+          "description": "Bounded list of scene objects without large binary blobs (max 24)."
+        },
+        "thumbnailUrl": {
+          "type": "string",
+          "description": "Compact thumbnail path or compressed WebP data URL (max 200KB).",
+          "minLength": 0,
+          "maxLength": 200000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the project was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest project edit."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "title",
+        "logline",
+        "storyIdea",
+        "style",
+        "aspectRatio",
+        "styleNotes",
+        "suggestedMusicMood",
+        "selectedMusicId",
+        "characterIds",
+        "scenes",
+        "thumbnailUrl",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "StudioCharacter": {
+      "title": "StudioCharacter",
+      "description": "Reusable character identity profile saved in a creator's Firestore workspace.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Document identifier matching the character ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the creator who owns this character.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Character name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "role": {
+          "type": "string",
+          "description": "Character story role.",
+          "minLength": 0,
+          "maxLength": 80
+        },
+        "styleAffinity": {
+          "type": "string",
+          "description": "Preferred visual style.",
+          "enum": [
+            "3D Pixar-Style Cartoon",
+            "Anime",
+            "Cinematic Film",
+            "2D Illustration",
+            "Music Video",
+            "Product Ad",
+            "Realistic",
+            "3D Cartoon",
+            "Educational"
+          ],
+          "maxLength": 40
+        },
+        "appearancePrompt": {
+          "type": "string",
+          "description": "Consistent appearance description.",
+          "minLength": 0,
+          "maxLength": 1000
+        },
+        "personalityTraits": {
+          "type": "array",
+          "description": "Bounded list of personality tags (max 10)."
+        },
+        "voiceName": {
+          "type": "string",
+          "description": "Preferred narrator/character voice.",
+          "enum": ["Kore", "Puck", "Charon", "Fenrir", "Zephyr"],
+          "maxLength": 32
+        },
+        "voiceStyle": {
+          "type": "string",
+          "description": "Voice delivery cue.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "voiceArchetype": {
+          "type": "string",
+          "description": "Locked voice archetype tag.",
+          "minLength": 0,
+          "maxLength": 64
+        },
+        "voicePreset": {
+          "type": "string",
+          "description": "Talking-scene voice preset key.",
+          "enum": ["male", "female", "cartoon", "mentor", "bright"],
+          "maxLength": 16
+        },
+        "voicePitch": {
+          "type": "number",
+          "description": "Relative voice pitch multiplier."
+        },
+        "voiceSpeed": {
+          "type": "number",
+          "description": "Relative voice speed multiplier."
+        },
+        "lockedVoice": {
+          "type": "boolean",
+          "description": "Whether character voice settings are locked across episodes."
+        },
+        "signatureProps": {
+          "type": "string",
+          "description": "Signature wardrobe or props.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "colorPalette": {
+          "type": "array",
+          "description": "Bounded list of hex color swatches (max 8)."
+        },
+        "avatarUrl": {
+          "type": "string",
+          "description": "Asset URL or compressed thumbnail portrait (max 250KB).",
+          "minLength": 0,
+          "maxLength": 250000
+        },
+        "avatarSource": {
+          "type": "string",
+          "description": "Origin of the character portrait.",
+          "enum": ["studio", "flux", "upload"],
+          "maxLength": 16
+        },
+        "expressionSheet": {
+          "type": "array",
+          "description": "Bounded 4-view expression & turnaround thumbnails (max 4)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the character was saved."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest character edit."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "name",
+        "role",
+        "styleAffinity",
+        "appearancePrompt",
+        "personalityTraits",
+        "voiceName",
+        "voiceStyle",
+        "signatureProps",
+        "colorPalette",
+        "avatarUrl",
+        "avatarSource",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "StudioCreation": {
+      "title": "StudioCreation",
+      "description": "Lightweight history record of an image or video generated in Create.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Document identifier matching the creation ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the creator who generated this item.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "mode": {
+          "type": "string",
+          "description": "Generation mode.",
+          "enum": ["image", "video"],
+          "maxLength": 16
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Prompt used to generate the image or video.",
+          "minLength": 1,
+          "maxLength": 1500
+        },
+        "style": {
+          "type": "string",
+          "description": "Visual style preset.",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "aspectRatio": {
+          "type": "string",
+          "description": "Output aspect ratio.",
+          "enum": ["16:9", "9:16", "1:1", "21:9"],
+          "maxLength": 10
+        },
+        "mediaUrl": {
+          "type": "string",
+          "description": "Hosted video URL or compressed WebP image thumbnail (max 300KB).",
+          "minLength": 0,
+          "maxLength": 300000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the creation was recorded."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest update."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "mode",
+        "prompt",
+        "style",
+        "aspectRatio",
+        "mediaUrl",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserWorkspaceProfile" },
+      "description": "Private root document for a signed-in user's workspace."
+    },
+    "/users/{userId}/showBibles/{bibleId}": {
+      "schema": { "$ref": "#/entities/ShowBible" },
+      "description": "Private series Show Bible memory documents owned by {userId}."
+    },
+    "/users/{userId}/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/StudioProject" },
+      "description": "Private storyboard and episode projects owned by {userId}."
+    },
+    "/users/{userId}/characters/{characterId}": {
+      "schema": { "$ref": "#/entities/StudioCharacter" },
+      "description": "Private saved characters owned by {userId}."
+    },
+    "/users/{userId}/creations/{creationId}": {
+      "schema": { "$ref": "#/entities/StudioCreation" },
+      "description": "Private history of Create studio outputs owned by {userId}."
+    }
+  }
+}
