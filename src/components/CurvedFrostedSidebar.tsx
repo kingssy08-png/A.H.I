@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clapperboard,
+  Download,
   Film,
   FolderKanban,
   Gem,
@@ -18,6 +19,7 @@ import {
   Video,
 } from 'lucide-react';
 import type { User as FirebaseUser } from 'firebase/auth';
+import { usePWAInstall } from '../hooks/usePWAInstall';
 
 export type SidebarSectionId =
   | 'create'
@@ -70,6 +72,10 @@ export function CurvedFrostedSidebar({
   const [isPinned, setIsPinned] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [suppressHoverUntilLeave, setSuppressHoverUntilLeave] = useState(false);
+  const [showIOSTip, setShowIOSTip] = useState(false);
+
+  const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
+  const showInstallControl = !isInstalled && (isInstallable || isIOS);
 
   const isExpanded = isPinned || (isHovered && !suppressHoverUntilLeave);
 
@@ -350,6 +356,51 @@ export function CurvedFrostedSidebar({
               isExpanded ? 'px-3.5 pr-6' : 'px-2 pr-3'
             }`}
           >
+            {/* Optional 1-Click Install A.H.I App (hidden once installed in standalone mode) */}
+            {showInstallControl &&
+              (isExpanded ? (
+                <div className="space-y-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isInstallable) {
+                        void install();
+                      } else if (isIOS) {
+                        setShowIOSTip((prev) => !prev);
+                      }
+                    }}
+                    className="w-full flex items-center justify-center gap-2 rounded-2xl bg-[#2DD4BF]/12 hover:bg-[#2DD4BF]/20 border border-[#2DD4BF]/35 hover:border-[#2DD4BF]/60 text-[#F8FAFC] shadow-[0_0_18px_rgba(45,212,191,0.16)] px-3 py-2 text-xs font-semibold transition-all cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5 text-[#2DD4BF] shrink-0" />
+                    <span className="whitespace-nowrap">Install A.H.I App</span>
+                  </button>
+                  {isIOS && showIOSTip && (
+                    <div className="rounded-xl bg-[#07090E]/85 border border-[#2DD4BF]/30 px-2.5 py-2 text-[11px] text-[#E2E8F0] leading-snug">
+                      Tap Share -&gt; &apos;Add to Home Screen&apos; to install A.H.I
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isInstallable) {
+                        void install();
+                      } else if (isIOS) {
+                        setIsPinned(true);
+                        setShowIOSTip(true);
+                      }
+                    }}
+                    title="Install A.H.I App"
+                    aria-label="Install A.H.I App"
+                    className="w-9 h-9 rounded-xl bg-[#2DD4BF]/12 hover:bg-[#2DD4BF]/22 border border-[#2DD4BF]/40 text-[#2DD4BF] flex items-center justify-center shadow-[0_0_16px_rgba(45,212,191,0.18)] transition-all cursor-pointer"
+                  >
+                    <Download className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+
             {isExpanded ? (
               <button
                 type="button"

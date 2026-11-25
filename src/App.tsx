@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { LogIn } from 'lucide-react';
+import { LogIn, WifiOff } from 'lucide-react';
+import { useOnlineStatus } from './hooks/usePWAInstall';
 import {
   deleteUser,
   onAuthStateChanged,
@@ -79,6 +80,7 @@ export default function App() {
   const [activeProjectId, setActiveProjectId] = useState<string>(SEED_PROJECTS[0].id);
 
   const [studioPrefs, setStudioPrefs] = useState<StudioPreferences>(() => loadStudioPreferences());
+  const isOnline = useOnlineStatus();
 
   // Firebase Auth & Workspace State
   const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
@@ -744,6 +746,16 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {!isOnline && (
+        <div
+          role="status"
+          className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-xl backdrop-blur-2xl bg-[rgba(17,22,33,0.9)] border border-amber-400/40 px-3.5 py-2 text-xs font-medium text-amber-200 shadow-[0_12px_32px_rgba(0,0,0,0.6)]"
+        >
+          <WifiOff className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <span>Offline Mode — Local projects &amp; cached shell active</span>
+        </div>
+      )}
 
       <AccountSettingsModal
         isOpen={settingsModalOpen}
