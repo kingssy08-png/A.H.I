@@ -200,65 +200,78 @@ export async function generateHfImage(
     return postJson('/api/hf/generate-image', requestBody);
   }
 
-  const res = await fetch('/api/hf/generate-image-stream', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody),
-  });
+  try {
+    const res = await fetch('/api/hf/generate-image-stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
 
-  if (!res.ok || !res.body) {
-    const errBody = await res.json().catch(() => ({}));
-    throw new Error(errBody.error || `Image generation failed (${res.status})`);
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let finalResult: {
-    imageDataUrl: string;
-    spaceUsed: string;
-    nodeLabel: string;
-    provider?: 'cloudflare' | 'colab-turbo' | 'huggingface';
-    elapsedMs?: number;
-    translatedPrompt: string;
-    width: number;
-    height: number;
-  } | null = null;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n\n');
-    buffer = lines.pop() ?? '';
-
-    for (const chunk of lines) {
-      const dataLine = chunk.split('\n').find((l) => l.startsWith('data: '));
-      if (!dataLine) continue;
-      const evt = JSON.parse(dataLine.slice(6)) as HfVideoProgressEvent;
-      onProgress(evt);
-      if (evt.type === 'error') {
-        throw new Error(evt.error || 'Image generation failed on GPU node.');
+    if (!res.ok || !res.body) {
+      const errBody = await res.json().catch(() => ({}));
+      if (res.status >= 500) {
+        return await postJson('/api/hf/generate-image', requestBody);
       }
-      if (evt.type === 'complete' && evt.imageDataUrl) {
-        finalResult = {
-          imageDataUrl: evt.imageDataUrl,
-          spaceUsed: evt.spaceUsed ?? '@cf/black-forest-labs/flux-1-schnell',
-          nodeLabel: evt.nodeLabel ?? evt.spaceUsed ?? 'Turbo GPU Node',
-          provider: evt.provider,
-          elapsedMs: evt.elapsedMs,
-          translatedPrompt: evt.translatedPrompt ?? payload.prompt,
-          width: evt.width ?? 1024,
-          height: evt.height ?? 1024,
-        };
+      throw new Error(errBody.error || `Image generation failed (${res.status})`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalResult: {
+      imageDataUrl: string;
+      spaceUsed: string;
+      nodeLabel: string;
+      provider?: 'cloudflare' | 'colab-turbo' | 'huggingface';
+      elapsedMs?: number;
+      translatedPrompt: string;
+      width: number;
+      height: number;
+    } | null = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n\n');
+      buffer = lines.pop() ?? '';
+
+      for (const chunk of lines) {
+        const dataLine = chunk.split('\n').find((l) => l.startsWith('data: '));
+        if (!dataLine) continue;
+        const evt = JSON.parse(dataLine.slice(6)) as HfVideoProgressEvent;
+        onProgress(evt);
+        if (evt.type === 'error') {
+          throw new Error(evt.error || 'Image generation failed on GPU node.');
+        }
+        if (evt.type === 'complete' && evt.imageDataUrl) {
+          finalResult = {
+            imageDataUrl: evt.imageDataUrl,
+            spaceUsed: evt.spaceUsed ?? '@cf/black-forest-labs/flux-1-schnell',
+            nodeLabel: evt.nodeLabel ?? evt.spaceUsed ?? 'Turbo GPU Node',
+            provider: evt.provider,
+            elapsedMs: evt.elapsedMs,
+            translatedPrompt: evt.translatedPrompt ?? payload.prompt,
+            width: evt.width ?? 1024,
+            height: evt.height ?? 1024,
+          };
+        }
       }
+    }
+
+    if (finalResult) {
+      return finalResult;
+    }
+  } catch (streamErr) {
+    // Fallback to single-request JSON endpoint when SSE stream is interrupted by serverless timeouts
+    try {
+      return await postJson('/api/hf/generate-image', requestBody);
+    } catch {
+      throw streamErr;
     }
   }
 
-  if (!finalResult) {
-    throw new Error('Image generation stream ended without returning an image.');
-  }
-  return finalResult;
+  return postJson('/api/hf/generate-image', requestBody);
 }
 
 export function generateHfCharacterImage(

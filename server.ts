@@ -596,6 +596,27 @@ function detectBase64ImageMime(base64Str: string): string {
   return 'image/jpeg';
 }
 
+function detectImageBufferMime(buf: Buffer, headerContentType = ''): string | null {
+  const cleanHeader = headerContentType.split(';')[0]?.trim().toLowerCase() ?? '';
+  if (cleanHeader.startsWith('image/')) {
+    return cleanHeader;
+  }
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return 'image/png';
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    buf.length >= 12 &&
+    buf.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buf.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  return null;
+}
+
 async function runCloudflareFluxImage(
   fullPrompt: string,
   aspectRatio: string,
@@ -614,7 +635,7 @@ async function runCloudflareFluxImage(
   const promptText = `${fullPrompt}${ratioCue}`.slice(0, 2000);
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 14000);
+  const timer = setTimeout(() => controller.abort(), 18000);
 
   try {
     const endpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(
@@ -645,39 +666,164 @@ async function runCloudflareFluxImage(
       throw new Error(
         isQuota
           ? 'Cloudflare Workers AI daily free limit reached'
-          : `Cloudflare Workers AI returned HTTP ${cfRes.status}`
+          : `Cloudflare Workers AI returned HTTP ${cfRes.status}${errBody ? `: ${errBody.slice(0, 140)}` : ''}`
       );
     }
 
-    if (contentType.startsWith('image/')) {
-      const buf = Buffer.from(await cfRes.arrayBuffer());
+    const rawBuf = Buffer.from(await cfRes.arrayBuffer());
+    const binaryMime = detectImageBufferMime(rawBuf, contentType);
+    if (binaryMime && rawBuf.length > 64) {
       return {
-        imageDataUrl: `data:${contentType};base64,${buf.toString('base64')}`,
+        imageDataUrl: `data:${binaryMime};base64,${rawBuf.toString('base64')}`,
         elapsedMs: Date.now() - started,
       };
     }
 
-    const json = (await cfRes.json()) as {
+    let json: {
       success?: boolean;
       errors?: Array<{ message?: string }>;
       result?: { image?: string };
       image?: string;
     };
+    try {
+      json = JSON.parse(rawBuf.toString('utf-8')) as typeof json;
+    } catch {
+      throw new Error('Unexpected non-image response from Cloudflare Workers AI');
+    }
 
-    const base64Image = json.result?.image ?? json.image;
-    if (!base64Image || json.success === false) {
+    const rawImage = json.result?.image ?? json.image;
+    if (!rawImage || json.success === false) {
       const errMsg = json.errors?.[0]?.message || 'Empty response from Cloudflare Workers AI';
       throw new Error(errMsg);
     }
 
-    const mime = detectBase64ImageMime(base64Image);
+    const imageDataUrl = rawImage.startsWith('data:image/')
+      ? rawImage
+      : `data:${detectBase64ImageMime(rawImage)};base64,${rawImage}`;
     return {
-      imageDataUrl: `data:${mime};base64,${base64Image}`,
+      imageDataUrl,
       elapsedMs: Date.now() - started,
     };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function runDirectHuggingFaceImage(
+  fullPrompt: string,
+  dims: { w: number; h: number },
+  useSdxl: boolean,
+  hfToken: string
+): Promise<{ imageDataUrl: string; modelUsed: string; elapsedMs: number }> {
+  const started = Date.now();
+  const models = useSdxl
+    ? ['stabilityai/stable-diffusion-xl-base-1.0', 'black-forest-labs/FLUX.1-schnell']
+    : ['black-forest-labs/FLUX.1-schnell', 'stabilityai/stable-diffusion-xl-base-1.0'];
+
+  let lastErr = 'Hugging Face Inference API unavailable';
+  for (const modelId of models) {
+    const endpoints = [
+      `https://router.huggingface.co/hf-inference/models/${modelId}`,
+      `https://api-inference.huggingface.co/models/${modelId}`,
+    ];
+
+    for (const url of endpoints) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 18000);
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${hfToken}`,
+            'Content-Type': 'application/json',
+            Accept: 'image/png',
+          },
+          body: JSON.stringify({
+            inputs: fullPrompt.slice(0, 1500),
+            parameters: {
+              width: dims.w,
+              height: dims.h,
+              num_inference_steps: modelId.includes('FLUX.1-schnell') ? 4 : 20,
+            },
+            options: { wait_for_model: true },
+          }),
+          signal: controller.signal,
+        });
+
+        const rawBuf = Buffer.from(await res.arrayBuffer());
+        if (!res.ok) {
+          const textErr = rawBuf.toString('utf-8').slice(0, 160);
+          lastErr = `Hugging Face (${modelId}) HTTP ${res.status}${textErr ? `: ${textErr}` : ''}`;
+          continue;
+        }
+
+        const mime = detectImageBufferMime(rawBuf, res.headers.get('content-type') || '');
+        if (mime && rawBuf.length > 64) {
+          return {
+            imageDataUrl: `data:${mime};base64,${rawBuf.toString('base64')}`,
+            modelUsed: modelId,
+            elapsedMs: Date.now() - started,
+          };
+        }
+
+        lastErr = `Hugging Face (${modelId}) returned non-image payload`;
+      } catch (err) {
+        lastErr = err instanceof Error ? err.message : String(err);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  throw new Error(lastErr);
+}
+
+async function runPollinationsFreeImage(
+  fullPrompt: string,
+  dims: { w: number; h: number }
+): Promise<{ imageDataUrl: string; elapsedMs: number }> {
+  const started = Date.now();
+  const clampedW = Math.min(1280, Math.max(512, dims.w));
+  const clampedH = Math.min(1280, Math.max(512, dims.h));
+  const seed = Math.floor(Math.random() * 1_000_000_000);
+  const encodedPrompt = encodeURIComponent(fullPrompt.slice(0, 900));
+
+  const urls = [
+    `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${clampedW}&height=${clampedH}&nologo=true&seed=${seed}&model=flux`,
+    `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}`,
+  ];
+
+  let lastErr = 'Free open-source image endpoint unavailable';
+  for (const url of urls) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 22000);
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: { Accept: 'image/*' },
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        lastErr = `Pollinations returned HTTP ${res.status}`;
+        continue;
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      const mime = detectImageBufferMime(buf, res.headers.get('content-type') || '');
+      if (mime && buf.length > 100) {
+        return {
+          imageDataUrl: `data:${mime};base64,${buf.toString('base64')}`,
+          elapsedMs: Date.now() - started,
+        };
+      }
+      lastErr = 'Pollinations returned invalid image data';
+    } catch (err) {
+      lastErr = err instanceof Error ? err.message : String(err);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw new Error(lastErr);
 }
 
 function resolveImageInputToBuffer(
@@ -811,8 +957,8 @@ async function enhanceCinemaVideoPrompt(options: {
   });
 
   const modelsToTry: Array<{ model: string; useThinkingLow: boolean }> = [
-    { model: 'gemini-2.5-flash', useThinkingLow: false },
     { model: 'gemini-4-hydrogen', useThinkingLow: true },
+    { model: 'gemini-3.1-flash-lite', useThinkingLow: false },
   ];
 
   for (const candidate of modelsToTry) {
@@ -1008,7 +1154,7 @@ async function buildTalkingSceneCompositingPrompt(options: {
     ].join('\n'),
   });
 
-  for (const model of ['gemini-2.5-flash', 'gemini-4-hydrogen']) {
+  for (const model of ['gemini-4-hydrogen', 'gemini-3.1-flash-lite']) {
     try {
       const response = await withTimeout(
         ai.models.generateContent({
@@ -1402,8 +1548,8 @@ export function createApiApp() {
       let generatedJson: Record<string, unknown> | null = null;
       let lastErr: unknown = null;
       for (const candidate of [
-        { model: 'gemini-2.5-flash', useThinking: false },
         { model: 'gemini-4-hydrogen', useThinking: true },
+        { model: 'gemini-3.1-flash-lite', useThinking: false },
       ]) {
         try {
           const response = await ai.models.generateContent({
@@ -1596,7 +1742,7 @@ export function createApiApp() {
 
       if (avatarBuf && apiKey) {
         const ai = getGeminiClient();
-        for (const model of ['gemini-2.5-flash', 'gemini-4-hydrogen']) {
+        for (const model of ['gemini-4-hydrogen', 'gemini-3.1-flash-lite']) {
           try {
             const visionRes = await withTimeout(
               ai.models.generateContent({
@@ -2078,10 +2224,15 @@ function sanitizeSvgMarkup(rawSvg: string, width: number, height: number): strin
 
     const fullPrompt = buildTranslatedImagePrompt(options.prompt, options.style);
     const cfCreds = !useSdxl ? getCloudflareCredentials() : null;
+    const hfToken = getHfToken();
     const validColab = validateColabGradioUrl(options.colabUrl);
 
     const totalSteps =
-      (validColab ? 1 : 0) + (cfCreds ? 1 : 0) + hfCandidates.length;
+      (validColab ? 1 : 0) +
+      (cfCreds ? 1 : 0) +
+      (hfToken ? 1 : 0) +
+      hfCandidates.length +
+      1;
     let stepNum = 0;
     let lastError = `All free ${useSdxl ? 'SDXL / SD 3.5' : 'Flux.1'} nodes are currently busy.`;
 
@@ -2096,7 +2247,7 @@ function sanitizeSvgMarkup(rawSvg: string, width: number, height: number): strin
         provider: 'colab-turbo',
         attempt: stepNum,
         totalAttempts: totalSteps,
-        progress: 25,
+        progress: 20,
         translatedPrompt: fullPrompt,
         message: `Connected to Private Colab Turbo GPU (${validColab.host}) · Rendering zero-queue...`,
       });
@@ -2134,7 +2285,7 @@ function sanitizeSvgMarkup(rawSvg: string, width: number, height: number): strin
         provider: 'cloudflare',
         attempt: stepNum,
         totalAttempts: totalSteps,
-        progress: 40,
+        progress: 35,
         translatedPrompt: fullPrompt,
         message:
           validColab
@@ -2164,13 +2315,47 @@ function sanitizeSvgMarkup(rawSvg: string, width: number, height: number): strin
       }
     }
 
-    // Priority 2: Automatic Free Hugging Face Spaces Failover
-    for (let i = 0; i < hfCandidates.length; i++) {
+    // Priority 2: Direct Hugging Face Inference API (Serverless HTTPS — no Gradio WebSocket overhead)
+    if (hfToken) {
+      stepNum++;
+      const nodeLabel = 'Hugging Face Inference API';
+      onStatus?.({
+        space: 'black-forest-labs/FLUX.1-schnell',
+        nodeLabel,
+        provider: 'huggingface',
+        attempt: stepNum,
+        totalAttempts: totalSteps,
+        progress: 50,
+        translatedPrompt: fullPrompt,
+        message: cfCreds
+          ? `${lastError} — falling back to Direct Hugging Face Inference API...`
+          : `Rendering via Direct Hugging Face Inference API...`,
+      });
+      try {
+        const hfDirect = await runDirectHuggingFaceImage(fullPrompt, dims, useSdxl, hfToken);
+        return {
+          imageDataUrl: hfDirect.imageDataUrl,
+          spaceUsed: hfDirect.modelUsed,
+          nodeLabel,
+          provider: 'huggingface',
+          elapsedMs: hfDirect.elapsedMs,
+          translatedPrompt: fullPrompt,
+          width: dims.w,
+          height: dims.h,
+        };
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    // Priority 3: Automatic Free Hugging Face Spaces Failover (bounded on serverless)
+    const maxGradioAttempts = process.env.VERCEL ? Math.min(2, hfCandidates.length) : hfCandidates.length;
+    for (let i = 0; i < maxGradioAttempts; i++) {
       stepNum++;
       const candidate = hfCandidates[i];
       const nodeLabel = getNodeLabel(candidate);
       const started = Date.now();
-      const baseProgress = Math.round(((i + 0.25) / hfCandidates.length) * 75);
+      const baseProgress = Math.round(55 + ((i + 0.25) / Math.max(1, maxGradioAttempts)) * 25);
 
       onStatus?.({
         space: candidate,
@@ -2178,7 +2363,7 @@ function sanitizeSvgMarkup(rawSvg: string, width: number, height: number): strin
         provider: 'huggingface',
         attempt: stepNum,
         totalAttempts: totalSteps,
-        progress: Math.max(18, baseProgress),
+        progress: Math.min(82, baseProgress),
         translatedPrompt: fullPrompt,
         message:
           stepNum > 1
@@ -2209,8 +2394,36 @@ function sanitizeSvgMarkup(rawSvg: string, width: number, height: number): strin
       }
     }
 
+    // Priority 4: Zero-Failure Free Open-Source Fallback (Pollinations)
+    stepNum++;
+    onStatus?.({
+      space: 'pollinations/flux',
+      nodeLabel: 'Open-Source Free Fallback',
+      provider: 'huggingface',
+      attempt: stepNum,
+      totalAttempts: totalSteps,
+      progress: 88,
+      translatedPrompt: fullPrompt,
+      message: `Primary GPU nodes busy (${lastError}) — routing to free open-source fallback...`,
+    });
+    try {
+      const freeRes = await runPollinationsFreeImage(fullPrompt, dims);
+      return {
+        imageDataUrl: freeRes.imageDataUrl,
+        spaceUsed: 'pollinations/flux',
+        nodeLabel: 'Open-Source Free Fallback',
+        provider: 'huggingface',
+        elapsedMs: freeRes.elapsedMs,
+        translatedPrompt: fullPrompt,
+        width: dims.w,
+        height: dims.h,
+      };
+    } catch (err) {
+      lastError = `${lastError}; fallback: ${err instanceof Error ? err.message : String(err)}`;
+    }
+
     throw new Error(
-      `All image nodes are currently busy (${lastError}). Please retry shortly.`
+      `All image generation providers failed (${lastError}). Please retry shortly.`
     );
   }
 
@@ -3221,6 +3434,21 @@ function sanitizeSvgMarkup(rawSvg: string, width: number, height: number): strin
       res.end();
     }
   });
+
+  // Structured JSON Error Handler for all /api/* routes (prevents unhandled HTML 500 crashes)
+  app.use(
+    (
+      err: unknown,
+      _req: Request,
+      res: Response,
+      _next: express.NextFunction
+    ) => {
+      if (res.headersSent) return;
+      const message =
+        err instanceof Error ? err.message : 'Unexpected server error in API route.';
+      res.status(500).json({ error: message });
+    }
+  );
 
   return app;
 }
