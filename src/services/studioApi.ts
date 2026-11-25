@@ -57,6 +57,32 @@ export interface GeneratedScriptResponse {
   >;
 }
 
+class HttpApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function extractErrorMessage(res: Response, fallback: string): Promise<string> {
+  const rawText = await res.text().catch(() => '');
+  if (rawText) {
+    try {
+      const parsed = JSON.parse(rawText) as { error?: string };
+      if (parsed && typeof parsed.error === 'string' && parsed.error.trim()) {
+        return parsed.error.trim();
+      }
+    } catch {
+      const trimmed = rawText.trim();
+      if (trimmed && !trimmed.startsWith('<!') && !trimmed.startsWith('<html')) {
+        return trimmed.slice(0, 220);
+      }
+    }
+  }
+  return fallback;
+}
+
 async function postJson<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: 'POST',
@@ -64,11 +90,11 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
 
-  const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.error || `Request failed with status ${res.status}`);
+    const msg = await extractErrorMessage(res, `Request failed with status ${res.status}`);
+    throw new HttpApiError(res.status, msg);
   }
-  return data as T;
+  return (await res.json()) as T;
 }
 
 export async function checkServerHealth(): Promise<{
@@ -77,11 +103,15 @@ export async function checkServerHealth(): Promise<{
   hasCloudflareAi?: boolean;
   hasHfToken?: boolean;
 }> {
-  const res = await fetch('/api/health');
-  if (!res.ok) {
+  try {
+    const res = await fetch('/api/health');
+    if (!res.ok) {
+      return { ok: false, hasApiKey: false, hasCloudflareAi: false };
+    }
+    return await res.json();
+  } catch {
     return { ok: false, hasApiKey: false, hasCloudflareAi: false };
   }
-  return res.json();
 }
 
 export function testColabTurboConnection(colabUrl: string): Promise<{
@@ -91,11 +121,14 @@ export function testColabTurboConnection(colabUrl: string): Promise<{
   endpoints: string[];
   latencyMs: number;
 }> {
-  return postJson('/api/turbo/test-colab', { colabUrl });
+  return postJson('/api/test-colab', { colabUrl });
 }
 
 export function generateScript(payload: GenerateScriptPayload): Promise<GeneratedScriptResponse> {
-  return postJson<GeneratedScriptResponse>('/api/scripts/generate', payload);
+  return postJson<GeneratedScriptResponse>('/api/generate-script', {
+    ...payload,
+    action: 'generate',
+  });
 }
 
 export function refineSceneWithAi(payload: {
@@ -103,8 +136,15 @@ export function refineSceneWithAi(payload: {
   instruction: string;
   style: AnimationStyle;
   projectTitle: string;
-}): Promise<Omit<Scene, 'id' | 'dialogueLines'> & { dialogueLines: Array<{ speaker: string; emotion: string; line: string }> }> {
-  return postJson('/api/scripts/refine-scene', payload);
+}): Promise<
+  Omit<Scene, 'id' | 'dialogueLines'> & {
+    dialogueLines: Array<{ speaker: string; emotion: string; line: string }>;
+  }
+> {
+  return postJson('/api/generate-script', {
+    ...payload,
+    action: 'refine-scene',
+  });
 }
 
 export function generateSceneStoryboard(payload: {
@@ -113,14 +153,20 @@ export function generateSceneStoryboard(payload: {
   aspectRatio: AspectRatio;
   projectTitle: string;
 }): Promise<StoryboardData> {
-  return postJson<StoryboardData>('/api/storyboard/generate', payload);
+  return postJson<StoryboardData>('/api/generate-script', {
+    ...payload,
+    action: 'storyboard',
+  });
 }
 
 export function generateCharacterSheet(payload: {
   concept: string;
   styleAffinity: AnimationStyle;
 }): Promise<Omit<CharacterProfile, 'id' | 'avatarUrl'>> {
-  return postJson('/api/characters/generate', payload);
+  return postJson('/api/characters', {
+    ...payload,
+    action: 'generate',
+  });
 }
 
 export function generateCharacterExpressionSheet(payload: {
@@ -133,8 +179,9 @@ export function generateCharacterExpressionSheet(payload: {
   expressions: CharacterExpressionView[];
   visualDna: string;
 }> {
-  return postJson('/api/characters/expression-sheet', {
+  return postJson('/api/characters', {
     ...payload,
+    action: 'expression-sheet',
     colabUrl: payload.colabUrl ?? getActiveColabUrl(),
   });
 }
@@ -144,7 +191,7 @@ export function synthesizeVoiceover(payload: {
   voiceName: GeminiVoiceName;
   styleInstruction: string;
 }): Promise<{ audioBase64: string; mimeType: string; voiceName: GeminiVoiceName }> {
-  return postJson('/api/voice/synthesize', payload);
+  return postJson('/api/voice', payload);
 }
 
 export interface HfVideoProgressEvent {
@@ -169,6 +216,124 @@ export interface HfVideoProgressEvent {
   height?: number;
   mode?: 'text-to-video' | 'image-to-video' | 'lipsync';
   error?: string;
+}
+
+const CLIENT_STYLE_CUES: Record<string, string> = {
+  '3D Pixar-Style Cartoon':
+    '3D Pixar-style animated feature film aesthetic, subsurface scattering, expressive eyes, warm rim lighting, crisp 35mm depth-of-field',
+  '3D Cartoon': '3D animated cartoon feature aesthetic, vibrant color grading, warm rim highlights',
+  Anime: 'high-budget theatrical anime animation, crisp cel-shaded linework, luminous atmospheric lighting',
+  'Cinematic Film': '35mm anamorphic cinema film look, moody volumetric light, rich contrast',
+  '2D Illustration': 'hand-crafted 2D editorial illustration aesthetic, rich gouache brushwork',
+  'Music Video': 'high-energy stylized music video cinematography, vibrant neon and rim lighting',
+  'Product Ad': 'luxury commercial product studio macro photography, crisp specular highlights',
+  Realistic: 'photorealistic live-action cinema camera aesthetic, natural lens clarity',
+  Educational: 'clean 2.5D motion graphics explainer aesthetic, crisp geometric clarity',
+};
+
+const CLIENT_DIMS_BY_RATIO: Record<string, { w: number; h: number }> = {
+  '16:9': { w: 1280, h: 720 },
+  '9:16': { w: 720, h: 1280 },
+  '1:1': { w: 1024, h: 1024 },
+  '21:9': { w: 1344, h: 576 },
+};
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string' && reader.result.startsWith('data:')) {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Could not convert generated image blob to data URL.'));
+      }
+    };
+    reader.onerror = () => reject(new Error('Failed reading generated image blob.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function generatePollinationsBrowserFallback(
+  prompt: string,
+  style: AnimationStyle,
+  aspectRatio: AspectRatio = '16:9',
+  onProgress?: (event: HfVideoProgressEvent) => void
+): Promise<{
+  imageDataUrl: string;
+  spaceUsed: string;
+  nodeLabel: string;
+  provider?: 'cloudflare' | 'colab-turbo' | 'huggingface';
+  elapsedMs?: number;
+  translatedPrompt: string;
+  width: number;
+  height: number;
+}> {
+  const started = Date.now();
+  const dims = CLIENT_DIMS_BY_RATIO[aspectRatio] ?? { w: 1024, h: 1024 };
+  const styleCue = CLIENT_STYLE_CUES[style] ?? `${style} aesthetic`;
+  const enhancedPrompt = `${prompt.trim().slice(0, 700)}, ${styleCue}, crisp detail, studio lighting, clean framing, no text, no watermark`;
+  const seed = Date.now();
+  const encoded = encodeURIComponent(enhancedPrompt);
+
+  onProgress?.({
+    type: 'status',
+    space: 'pollinations/flux-browser',
+    nodeLabel: 'Direct Browser Fallback',
+    provider: 'huggingface',
+    progress: 85,
+    translatedPrompt: enhancedPrompt,
+    message: 'Connecting directly from browser to open-source image engine...',
+  });
+
+  const candidateUrls = [
+    `https://image.pollinations.ai/prompt/${encoded}?width=${dims.w}&height=${dims.h}&nologo=true&seed=${seed}`,
+    `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=1024&nologo=true&seed=${seed + 1}`,
+  ];
+
+  let lastErr = 'Free open-source image endpoint did not respond in time.';
+  for (const url of candidateUrls) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 30000);
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        lastErr = `Direct fallback endpoint returned HTTP ${res.status}`;
+        continue;
+      }
+      const blob = await res.blob();
+      if (!blob.size || (!blob.type.startsWith('image/') && blob.size < 256)) {
+        lastErr = 'Direct fallback returned invalid image bytes.';
+        continue;
+      }
+      const imageDataUrl = await blobToDataUrl(blob);
+      const elapsedMs = Date.now() - started;
+      const result = {
+        imageDataUrl,
+        spaceUsed: 'pollinations/flux',
+        nodeLabel: 'Open-Source Direct Engine',
+        provider: 'huggingface' as const,
+        elapsedMs,
+        translatedPrompt: enhancedPrompt,
+        width: dims.w,
+        height: dims.h,
+      };
+      onProgress?.({
+        type: 'complete',
+        ...result,
+        progress: 100,
+      });
+      return result;
+    } catch (err) {
+      lastErr = err instanceof Error ? err.message : String(err);
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
+  throw new Error(lastErr);
 }
 
 export async function generateHfImage(
@@ -196,23 +361,53 @@ export async function generateHfImage(
     colabUrl: payload.colabUrl ?? getActiveColabUrl(),
   };
 
+  if (payload.prompt.trim().length < 4) {
+    throw new HttpApiError(400, 'Please provide an image prompt of at least 4 characters.');
+  }
+
   if (!onProgress) {
-    return postJson('/api/hf/generate-image', requestBody);
+    try {
+      return await postJson('/api/generate-image', requestBody);
+    } catch (err) {
+      if (err instanceof HttpApiError && err.status === 400) {
+        throw err;
+      }
+      return await generatePollinationsBrowserFallback(
+        payload.prompt,
+        payload.style,
+        payload.aspectRatio
+      );
+    }
   }
 
   try {
-    const res = await fetch('/api/hf/generate-image-stream', {
+    const res = await fetch('/api/generate-image?stream=1', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      },
+      body: JSON.stringify({ ...requestBody, stream: true }),
     });
 
     if (!res.ok || !res.body) {
-      const errBody = await res.json().catch(() => ({}));
-      if (res.status >= 500) {
-        return await postJson('/api/hf/generate-image', requestBody);
+      if (res.status === 400) {
+        const msg = await extractErrorMessage(res, `Image generation failed (${res.status})`);
+        throw new HttpApiError(400, msg);
       }
-      throw new Error(errBody.error || `Image generation failed (${res.status})`);
+      try {
+        return await postJson('/api/generate-image', requestBody);
+      } catch (jsonErr) {
+        if (jsonErr instanceof HttpApiError && jsonErr.status === 400) {
+          throw jsonErr;
+        }
+        return await generatePollinationsBrowserFallback(
+          payload.prompt,
+          payload.style,
+          payload.aspectRatio,
+          onProgress
+        );
+      }
     }
 
     const reader = res.body.getReader();
@@ -263,15 +458,30 @@ export async function generateHfImage(
       return finalResult;
     }
   } catch (streamErr) {
-    // Fallback to single-request JSON endpoint when SSE stream is interrupted by serverless timeouts
-    try {
-      return await postJson('/api/hf/generate-image', requestBody);
-    } catch {
+    if (streamErr instanceof HttpApiError && streamErr.status === 400) {
       throw streamErr;
+    }
+    try {
+      return await postJson('/api/generate-image', requestBody);
+    } catch (jsonErr) {
+      if (jsonErr instanceof HttpApiError && jsonErr.status === 400) {
+        throw jsonErr;
+      }
+      return await generatePollinationsBrowserFallback(
+        payload.prompt,
+        payload.style,
+        payload.aspectRatio,
+        onProgress
+      );
     }
   }
 
-  return postJson('/api/hf/generate-image', requestBody);
+  return await generatePollinationsBrowserFallback(
+    payload.prompt,
+    payload.style,
+    payload.aspectRatio,
+    onProgress
+  );
 }
 
 export function generateHfCharacterImage(
@@ -322,8 +532,8 @@ async function consumeSseVideoStream(
   });
 
   if (!res.ok || !res.body) {
-    const errBody = await res.json().catch(() => ({}));
-    throw new Error(errBody.error || `Generation request failed (${res.status})`);
+    const errMsg = await extractErrorMessage(res, `Generation request failed (${res.status})`);
+    throw new Error(errMsg);
   }
 
   const reader = res.body.getReader();
@@ -395,9 +605,10 @@ export function generateHfVideoClip(
   onProgress: (event: HfVideoProgressEvent) => void
 ) {
   return consumeSseVideoStream(
-    '/api/hf/generate-video',
+    '/api/generate-video',
     {
       ...payload,
+      action: 'video',
       colabUrl: payload.colabUrl ?? getActiveColabUrl(),
     },
     onProgress
@@ -414,9 +625,10 @@ export function generateHfLipSyncClip(
   onProgress: (event: HfVideoProgressEvent) => void
 ) {
   return consumeSseVideoStream(
-    '/api/hf/lipsync',
+    '/api/generate-video',
     {
       ...payload,
+      action: 'lipsync',
       colabUrl: payload.colabUrl ?? getActiveColabUrl(),
     },
     onProgress
@@ -447,9 +659,10 @@ export function generateTalkingSceneClip(
   onProgress: (event: HfVideoProgressEvent) => void
 ) {
   return consumeSseVideoStream(
-    '/api/hf/talking-scene',
+    '/api/generate-video',
     {
       ...payload,
+      action: 'talking-scene',
       colabUrl: payload.colabUrl ?? getActiveColabUrl(),
     },
     onProgress
