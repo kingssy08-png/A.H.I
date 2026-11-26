@@ -1,6 +1,7 @@
 import {
   handleGenerateImageRequest,
   handleGenerateVideoRequest,
+  handleRemoveBackgroundRequest,
 } from '../../server/ahiBackend';
 
 export async function POST(request: Request): Promise<Response> {
@@ -13,6 +14,8 @@ export async function POST(request: Request): Promise<Response> {
         return await handleGenerateImageRequest(request, false);
       case 'generate-image-stream':
         return await handleGenerateImageRequest(request, true);
+      case 'remove-background':
+        return await handleRemoveBackgroundRequest(request);
       case 'generate-video':
         return await handleGenerateVideoRequest(request, 'video');
       case 'lipsync':

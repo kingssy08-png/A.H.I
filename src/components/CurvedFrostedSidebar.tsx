@@ -12,6 +12,7 @@ import {
   LogIn,
   LogOut,
   Mic,
+  Scissors,
   Settings,
   Sparkles,
   User as UserIcon,
@@ -26,6 +27,7 @@ export type SidebarSectionId =
   | 'text-to-image'
   | 'text-to-video'
   | 'image-to-video'
+  | 'background-remover'
   | 'story'
   | 'characters'
   | 'voice'
@@ -52,6 +54,7 @@ const MENU_ITEMS: Array<{
   { id: 'text-to-image', label: 'Text-to-Image', icon: ImageIcon },
   { id: 'text-to-video', label: 'Text-to-Video', icon: Video },
   { id: 'image-to-video', label: 'Image-to-Video', icon: ImagePlus },
+  { id: 'background-remover', label: 'Background Remover', icon: Scissors },
   { id: 'story', label: 'Story & Episodes', icon: Film },
   { id: 'characters', label: 'Character Library', icon: Users },
   { id: 'voice', label: 'Voice & Lip-Sync', icon: Mic },

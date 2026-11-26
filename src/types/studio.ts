@@ -97,6 +97,8 @@ export interface VideoReferenceItem {
   label: string;
   role: ReferenceRole;
   description?: string;
+  backgroundRemoved?: boolean;
+  originalImageUrl?: string;
 }
 
 export interface GeneratedImageItem {

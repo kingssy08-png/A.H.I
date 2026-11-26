@@ -489,12 +489,21 @@ export function StoryEpisodesView({
       const refs = assignedChars
         .filter((c) => Boolean(c.avatarUrl))
         .slice(0, 3)
-        .map((c) => ({
-          imageUrl: c.avatarUrl!,
-          role: 'Character' as const,
-          label: c.name,
-          description: c.appearancePrompt,
-        }));
+        .map((c) => {
+          const descParts = [c.appearancePrompt?.trim()].filter(Boolean);
+          if (c.signatureProps?.trim()) {
+            descParts.push(`Signature props: ${c.signatureProps.trim()}`);
+          }
+          if (c.colorPalette && c.colorPalette.length > 0) {
+            descParts.push(`Colors: ${c.colorPalette.join(', ')}`);
+          }
+          return {
+            imageUrl: c.avatarUrl!,
+            role: 'Character' as const,
+            label: c.name,
+            description: descParts.join('. '),
+          };
+        });
 
       const res = await generateHfVideoClip(
         {

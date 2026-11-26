@@ -54,6 +54,7 @@ import { type CreatePresetPayload, SimpleCreateView } from './views/SimpleCreate
 import { SimpleProjectsView } from './views/SimpleProjectsView';
 import { StoryEpisodesView } from './views/StoryEpisodesView';
 import { VoiceMusicStudioView } from './views/VoiceMusicStudioView';
+import { BackgroundRemoverView } from './views/BackgroundRemoverView';
 
 export default function App() {
   const [activeSection, setActiveSection] = useState<SidebarSectionId>('create');
@@ -613,6 +614,51 @@ export default function App() {
                   onCreateProject={handleCreateProject}
                   onSelectProject={handleSelectActiveProject}
                   onUpdateShowBible={handleUpdateShowBible}
+                />
+              )}
+
+              {activeSection === 'background-remover' && (
+                <BackgroundRemoverView
+                  onSendToImageGenerator={({ imageUrl, originalImageUrl, label, aspectRatio }) => {
+                    const mappedRatio =
+                      aspectRatio === '1:1' || aspectRatio === '9:16' || aspectRatio === '16:9'
+                        ? aspectRatio
+                        : undefined;
+                    setPendingCreatePreset({
+                      mode: 'image',
+                      aspectRatio: mappedRatio,
+                      openAttachPicker: false,
+                      referenceItem: {
+                        id: `bg-cutout-${Date.now()}`,
+                        imageUrl,
+                        originalImageUrl,
+                        label: label || 'Cutout Subject',
+                        role: 'Character',
+                        backgroundRemoved: true,
+                      },
+                    });
+                    setActiveSection('create');
+                  }}
+                  onSendToVideoGenerator={({ imageUrl, originalImageUrl, label, aspectRatio }) => {
+                    const mappedRatio =
+                      aspectRatio === '1:1' || aspectRatio === '9:16' || aspectRatio === '16:9'
+                        ? aspectRatio
+                        : undefined;
+                    setPendingCreatePreset({
+                      mode: 'video',
+                      aspectRatio: mappedRatio,
+                      openAttachPicker: false,
+                      referenceItem: {
+                        id: `bg-cutout-${Date.now()}`,
+                        imageUrl,
+                        originalImageUrl,
+                        label: label || 'Cutout Subject',
+                        role: 'Character',
+                        backgroundRemoved: true,
+                      },
+                    });
+                    setActiveSection('create');
+                  }}
                 />
               )}
 

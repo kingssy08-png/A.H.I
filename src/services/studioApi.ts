@@ -1,5 +1,13 @@
 import { Client, handle_file } from '@gradio/client';
 import { getActiveColabUrl } from '../utils/turboGpuConfig';
+import {
+  doesImageMatchAspectRatio,
+  getImageDimensions,
+  getTargetDimensionsForRatio,
+  normalizeImageOutputAspectRatio,
+  prepareReferenceCanvasForAspectRatio,
+  removeUniformBackgroundFallback,
+} from '../utils/imageReferencePipeline';
 import type {
   AnimationStyle,
   AspectRatio,
@@ -315,6 +323,17 @@ function extractBrowserGradioImageUrl(payload: unknown): string | null {
   return null;
 }
 
+const HF_BROWSER_BG_REMOVAL_SPACES = [
+  'not-lain/background-removal',
+  'briaai/BRIA-RMBG-1.4',
+  'ZhengPeng7/BiRefNet_demo',
+];
+
+const HF_BROWSER_REFERENCE_EDIT_SPACES = [
+  'black-forest-labs/FLUX.1-Kontext-dev',
+  'Qwen/Qwen-Image-Edit',
+];
+
 const HF_BROWSER_FLUX_SPACES = [
   'black-forest-labs/FLUX.1-schnell',
   'stabilityai/stable-diffusion-3.5-large-turbo',
@@ -327,6 +346,200 @@ const HF_BROWSER_SDXL_SPACES = [
   'prodia/fast-stable-diffusion',
 ];
 
+async function imageUrlToDataUrl(src: string): Promise<string> {
+  if (src.startsWith('data:image/')) return src;
+  const res = await fetch(src);
+  if (!res.ok) throw new Error('Could not read reference image.');
+  const blob = await res.blob();
+  return await blobToDataUrl(blob);
+}
+
+/**
+ * Removes background from an uploaded reference image using /api/remove-background,
+ * falling back directly in the browser to live Hugging Face RMBG/BiRefNet Spaces
+ * and finally a clean edge-flood fallback if all remote nodes are unreachable.
+ */
+export async function removeImageBackground(
+  imageUrl: string,
+  options?: { strictAi?: boolean }
+): Promise<{ imageDataUrl: string; spaceUsed: string }> {
+  const inputDataUrl = await imageUrlToDataUrl(imageUrl).catch(() => imageUrl);
+
+  try {
+    const serverRes = await postJson<{ imageDataUrl?: string; spaceUsed?: string }>(
+      '/api/remove-background',
+      { imageDataUrl: inputDataUrl }
+    );
+    if (serverRes.imageDataUrl) {
+      return {
+        imageDataUrl: serverRes.imageDataUrl,
+        spaceUsed: serverRes.spaceUsed ?? 'briaai/RMBG',
+      };
+    }
+  } catch {
+    // Fall through to browser Gradio ZeroGPU background removal
+  }
+
+  let blob: Blob | null = null;
+  try {
+    blob = await dataUrlOrRemoteToBlob(inputDataUrl);
+  } catch {
+    blob = null;
+  }
+
+  if (blob) {
+    for (const spaceId of HF_BROWSER_BG_REMOVAL_SPACES) {
+      try {
+        const client = await withBrowserTimeout(
+          Client.connect(spaceId),
+          14000,
+          `${spaceId} connection timed out.`
+        );
+        let endpoint = '/image';
+        let args: Record<string, unknown> = { image: handle_file(blob) };
+        if (spaceId === 'not-lain/background-removal') {
+          endpoint = '/png';
+          args = { f: handle_file(blob) };
+        } else if (spaceId === 'briaai/BRIA-RMBG-1.4') {
+          endpoint = '/run';
+          args = { image: handle_file(blob) };
+        } else if (spaceId === 'ZhengPeng7/BiRefNet_demo') {
+          endpoint = '/image';
+          args = { images: handle_file(blob), resolution: '', weights_file: 'General' };
+        }
+        const pred = await withBrowserTimeout(
+          client.predict(endpoint, args),
+          32000,
+          `${spaceId} background removal timed out.`
+        );
+        const mediaUrl = extractBrowserGradioImageUrl(pred.data);
+        if (mediaUrl) {
+          const downloaded = await imageUrlToDataUrl(mediaUrl).catch(() => mediaUrl);
+          return { imageDataUrl: downloaded, spaceUsed: spaceId };
+        }
+      } catch {
+        // try next BG removal Space
+      }
+    }
+  }
+
+  if (options?.strictAi) {
+    throw new Error(
+      'Background segmentation models are temporarily busy. Please try again in a moment.'
+    );
+  }
+
+  try {
+    const fallbackCutout = await removeUniformBackgroundFallback(inputDataUrl);
+    return { imageDataUrl: fallbackCutout, spaceUsed: 'local-matte' };
+  } catch {
+    return { imageDataUrl: inputDataUrl, spaceUsed: 'original' };
+  }
+}
+
+async function ensureResultMatchesAspectRatio(
+  imageDataUrl: string,
+  targetRatio: AspectRatio,
+  scenePrompt: string
+): Promise<{ imageDataUrl: string; width: number; height: number }> {
+  const targetDims = getTargetDimensionsForRatio(targetRatio);
+  const currentDims = await getImageDimensions(imageDataUrl);
+  if (
+    currentDims &&
+    doesImageMatchAspectRatio(currentDims.width, currentDims.height, targetRatio, 0.06)
+  ) {
+    return {
+      imageDataUrl,
+      width: currentDims.width,
+      height: currentDims.height,
+    };
+  }
+
+  // Try AI scene outpainting first so any off-ratio result expands cleanly instead of padding/cropping
+  try {
+    const blob = await dataUrlOrRemoteToBlob(imageDataUrl);
+    const client = await withBrowserTimeout(
+      Client.connect('fffiloni/diffusers-image-outpaint'),
+      14000,
+      'Outpaint Space timed out.'
+    );
+    const pred = await withBrowserTimeout(
+      client.predict('/infer', {
+        image: handle_file(blob),
+        width: targetDims.w,
+        height: targetDims.h,
+        overlap_percentage: 10,
+        num_inference_steps: 8,
+        resize_option: 'Full',
+        custom_resize_percentage: 50,
+        prompt_input: scenePrompt.slice(0, 380),
+        alignment: 'Middle',
+        overlap_left: true,
+        overlap_right: true,
+        overlap_top: true,
+        overlap_bottom: true,
+      }),
+      34000,
+      'Outpaint render timed out.'
+    );
+    const outUrl = extractBrowserGradioImageUrl(pred.data);
+    if (outUrl) {
+      const converted = await imageUrlToDataUrl(outUrl).catch(() => outUrl);
+      const outDims = await getImageDimensions(converted);
+      if (
+        outDims &&
+        doesImageMatchAspectRatio(outDims.width, outDims.height, targetRatio, 0.08)
+      ) {
+        return {
+          imageDataUrl: converted,
+          width: outDims.width,
+          height: outDims.height,
+        };
+      }
+    }
+  } catch {
+    // Fall back to soft ambient canvas expansion (never stretches or crops character)
+  }
+
+  const normalized = await normalizeImageOutputAspectRatio(imageDataUrl, targetRatio);
+  return {
+    imageDataUrl: normalized.imageDataUrl,
+    width: normalized.width,
+    height: normalized.height,
+  };
+}
+
+function buildReferenceScenePrompts(
+  prompt: string,
+  style: AnimationStyle,
+  aspectRatio: AspectRatio,
+  refs?: Array<Pick<VideoReferenceItem, 'imageUrl' | 'role' | 'label' | 'description'>>,
+  removeBackground?: boolean
+): { editPrompt: string; generationPrompt: string } {
+  const isWarmStorybook = style === 'Warm Storybook 3D';
+  const styleCue = CLIENT_STYLE_CUES[style] ?? `${style} aesthetic`;
+  const refSummary = (refs ?? [])
+    .map(
+      (r, idx) =>
+        `Ref ${idx + 1} [${r.role} - ${r.label}]${r.description ? `: ${r.description}` : ''}`
+    )
+    .join('; ');
+
+  const bgDirective = removeBackground
+    ? 'Completely replace the studio or original background with the prompted environment filling the entire frame.'
+    : 'Generate and expand the prompted environment seamlessly across the full canvas.';
+
+  const editPrompt = isWarmStorybook
+    ? `Keep the exact character appearance (face, hairstyle, skin tone, body proportions, clothing, colors, accessories) from the input image without cropping or stretching, and place them in this ${aspectRatio} scene: ${prompt.trim()}. ${bgDirective} ${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}`
+    : `Keep the exact character appearance (face, hairstyle, skin tone, body proportions, clothing, colors, accessories) from the input image without cropping or stretching, and render this ${aspectRatio} scene: ${prompt.trim()}. ${bgDirective} Style: ${styleCue}.`;
+
+  const generationPrompt = isWarmStorybook
+    ? `${prompt.trim().slice(0, 420)}${refSummary ? `. Character identity: ${refSummary}` : ''}. Full uncropped character(s) properly proportioned inside ${aspectRatio} frame. ${bgDirective} ${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}, no text, no watermark`
+    : `${prompt.trim().slice(0, 520)}${refSummary ? `. Character identity: ${refSummary}` : ''}. Full uncropped character(s) properly proportioned inside ${aspectRatio} composition. ${bgDirective} ${styleCue}, crisp detail, clean framing, no text, no watermark`;
+
+  return { editPrompt, generationPrompt };
+}
+
 async function generateHfSpaceBrowserFallback(
   payload: {
     prompt: string;
@@ -334,6 +547,10 @@ async function generateHfSpaceBrowserFallback(
     aspectRatio?: AspectRatio;
     engine?: ImageEngine;
     spaceId?: string;
+    imageDataUrl?: string;
+    preparedCanvasDataUrl?: string;
+    removeBackground?: boolean;
+    referenceImages?: Array<Pick<VideoReferenceItem, 'imageUrl' | 'role' | 'label' | 'description'>>;
   },
   onProgress?: (event: HfVideoProgressEvent) => void
 ): Promise<{
@@ -349,12 +566,115 @@ async function generateHfSpaceBrowserFallback(
 }> {
   const started = Date.now();
   const isWarmStorybook = payload.style === 'Warm Storybook 3D';
-  const dims = CLIENT_DIMS_BY_RATIO[payload.aspectRatio ?? '16:9'] ?? { w: 1280, h: 720 };
-  const styleCue = CLIENT_STYLE_CUES[payload.style] ?? `${payload.style} aesthetic`;
-  const enhancedPrompt = isWarmStorybook
-    ? `${payload.prompt.trim().slice(0, 520)}, ${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}, no text, no watermark`
-    : `${payload.prompt.trim().slice(0, 700)}, ${styleCue}, crisp detail, studio lighting, clean framing, no text, no watermark`;
+  const targetRatio = payload.aspectRatio ?? '16:9';
+  const dims = CLIENT_DIMS_BY_RATIO[targetRatio] ?? { w: 1280, h: 720 };
+  const hasRefs = Boolean(
+    payload.preparedCanvasDataUrl ||
+      payload.imageDataUrl ||
+      (payload.referenceImages && payload.referenceImages.length > 0)
+  );
 
+  const { editPrompt, generationPrompt } = buildReferenceScenePrompts(
+    payload.prompt,
+    payload.style,
+    targetRatio,
+    payload.referenceImages,
+    payload.removeBackground
+  );
+
+  const refInputDataUrl =
+    payload.preparedCanvasDataUrl ||
+    payload.imageDataUrl ||
+    payload.referenceImages?.[0]?.imageUrl;
+
+  let lastErr = 'Public Hugging Face ZeroGPU Spaces are temporarily busy.';
+
+  // 1. Try pixel-aware reference-conditioned Spaces first when reference image(s) are attached
+  if (hasRefs && refInputDataUrl) {
+    let refBlob: Blob | null = null;
+    try {
+      refBlob = await dataUrlOrRemoteToBlob(refInputDataUrl);
+    } catch {
+      refBlob = null;
+    }
+
+    if (refBlob) {
+      for (let i = 0; i < HF_BROWSER_REFERENCE_EDIT_SPACES.length; i++) {
+        const spaceId = HF_BROWSER_REFERENCE_EDIT_SPACES[i];
+        const nodeLabel = `Reference Scene Composer (${spaceId})`;
+        onProgress?.({
+          type: 'status',
+          space: spaceId,
+          nodeLabel,
+          provider: 'huggingface',
+          attempt: i + 1,
+          totalAttempts: HF_BROWSER_REFERENCE_EDIT_SPACES.length + 2,
+          progress: 64 + i * 8,
+          translatedPrompt: editPrompt,
+          message: `Composing reference character into ${targetRatio} scene...`,
+        });
+
+        try {
+          const client = await withBrowserTimeout(
+            Client.connect(spaceId),
+            15000,
+            `${spaceId} WebSocket connection timed out.`
+          );
+          const args =
+            spaceId === 'Qwen/Qwen-Image-Edit'
+              ? {
+                  image: handle_file(refBlob),
+                  prompt: editPrompt,
+                  seed: 0,
+                  randomize_seed: true,
+                  true_guidance_scale: 4,
+                  num_inference_steps: 28,
+                  rewrite_prompt: true,
+                }
+              : {
+                  input_image: handle_file(refBlob),
+                  prompt: editPrompt,
+                  seed: 0,
+                  randomize_seed: true,
+                  guidance_scale: 3.5,
+                  steps: 24,
+                };
+
+          const predResult = await withBrowserTimeout(
+            client.predict('/infer', args),
+            44000,
+            `${spaceId} GPU queue timeout reached.`
+          );
+          const mediaUrl = extractBrowserGradioImageUrl(predResult.data);
+          if (!mediaUrl) continue;
+
+          const rawDataUrl = await imageUrlToDataUrl(mediaUrl).catch(() => mediaUrl);
+          const normalized = await ensureResultMatchesAspectRatio(
+            rawDataUrl,
+            targetRatio,
+            editPrompt
+          );
+          const finalPayload = {
+            imageDataUrl: normalized.imageDataUrl,
+            imageUrl: normalized.imageDataUrl,
+            spaceUsed: spaceId,
+            nodeLabel,
+            provider: 'huggingface' as const,
+            elapsedMs: Date.now() - started,
+            translatedPrompt: editPrompt,
+            width: normalized.width,
+            height: normalized.height,
+          };
+          onProgress?.({ type: 'complete', ...finalPayload, progress: 100 });
+          return finalPayload;
+        } catch (err) {
+          lastErr = err instanceof Error ? err.message : String(err);
+        }
+      }
+    }
+  }
+
+  // 2. Fallback to fast Flux.1 / SD 3.5 Turbo Spaces with exact target aspect-ratio dims
   const useSdxl = payload.engine === 'sdxl';
   const baseSpaces = useSdxl ? HF_BROWSER_SDXL_SPACES : HF_BROWSER_FLUX_SPACES;
   const customSpace =
@@ -364,8 +684,6 @@ async function generateHfSpaceBrowserFallback(
   const candidates = customSpace
     ? [customSpace, ...baseSpaces.filter((s) => s !== customSpace)]
     : baseSpaces;
-
-  let lastErr = 'Public Hugging Face ZeroGPU Spaces are temporarily busy.';
 
   for (let i = 0; i < candidates.length; i++) {
     const spaceId = candidates[i];
@@ -377,8 +695,8 @@ async function generateHfSpaceBrowserFallback(
       provider: 'huggingface',
       attempt: i + 1,
       totalAttempts: candidates.length,
-      progress: Math.min(90, 70 + i * 10),
-      translatedPrompt: enhancedPrompt,
+      progress: Math.min(92, 74 + i * 8),
+      translatedPrompt: generationPrompt,
       message: `Connecting directly in browser via WebSockets to ${spaceId}...`,
     });
 
@@ -418,7 +736,7 @@ async function generateHfSpaceBrowserFallback(
           (lower === 'prompt' || lower === 'positive_prompt' || lower === 'text') &&
           !lower.includes('negative')
         ) {
-          gradioPayload[name] = enhancedPrompt;
+          gradioPayload[name] = generationPrompt;
         } else if (lower.includes('negative')) {
           gradioPayload[name] = isWarmStorybook
             ? WARM_STORYBOOK_3D_NEGATIVE_PROMPT
@@ -441,7 +759,7 @@ async function generateHfSpaceBrowserFallback(
       const predResult = await withBrowserTimeout(
         client.predict(
           endpoint,
-          Object.keys(gradioPayload).length > 0 ? gradioPayload : [enhancedPrompt]
+          Object.keys(gradioPayload).length > 0 ? gradioPayload : [generationPrompt]
         ),
         42000,
         `${spaceId} GPU queue timeout reached.`
@@ -480,7 +798,7 @@ async function generateHfSpaceBrowserFallback(
         nodeLabel,
         provider: 'huggingface' as const,
         elapsedMs,
-        translatedPrompt: enhancedPrompt,
+        translatedPrompt: generationPrompt,
         width: dims.w,
         height: dims.h,
       };
@@ -537,6 +855,11 @@ export async function generateHfImage(
     engine?: ImageEngine;
     spaceId?: string;
     colabUrl?: string;
+    imageDataUrl?: string;
+    removeBackground?: boolean;
+    referenceImages?: Array<
+      Pick<VideoReferenceItem, 'imageUrl' | 'role' | 'label' | 'description' | 'backgroundRemoved'>
+    >;
   },
   onProgress?: (event: HfVideoProgressEvent) => void
 ): Promise<{
@@ -550,14 +873,91 @@ export async function generateHfImage(
   width: number;
   height: number;
 }> {
-  const requestBody = {
-    ...payload,
-    colabUrl: payload.colabUrl ?? getActiveColabUrl(),
-  };
-
   if (payload.prompt.trim().length < 4) {
     throw new HttpApiError(400, 'Please provide an image prompt of at least 4 characters.');
   }
+
+  const targetRatio: AspectRatio = payload.aspectRatio ?? '16:9';
+  let preparedRefs = payload.referenceImages ? [...payload.referenceImages] : [];
+  if (preparedRefs.length === 0 && payload.imageDataUrl) {
+    preparedRefs = [
+      {
+        imageUrl: payload.imageDataUrl,
+        role: 'Character',
+        label: 'Reference Character',
+      },
+    ];
+  }
+
+  let preparedCanvasDataUrl: string | undefined;
+  if (preparedRefs.length > 0) {
+    onProgress?.({
+      type: 'status',
+      progress: 14,
+      message: payload.removeBackground
+        ? 'Isolating reference character & framing aspect ratio...'
+        : 'Framing reference character for target aspect ratio...',
+    });
+
+    const normalizedRefs = await Promise.all(
+      preparedRefs.map(async (ref) => {
+        const dataUrl = await imageUrlToDataUrl(ref.imageUrl).catch(() => ref.imageUrl);
+        if (
+          payload.removeBackground &&
+          !ref.backgroundRemoved &&
+          (ref.role === 'Character' || ref.role === 'Outfit / Prop')
+        ) {
+          const stripped = await removeImageBackground(dataUrl).catch(() => null);
+          return {
+            ...ref,
+            imageUrl: stripped?.imageDataUrl || dataUrl,
+            backgroundRemoved: Boolean(stripped?.imageDataUrl),
+          };
+        }
+        return { ...ref, imageUrl: dataUrl };
+      })
+    );
+
+    preparedRefs = normalizedRefs;
+    const canvasRes = await prepareReferenceCanvasForAspectRatio(normalizedRefs, targetRatio, {
+      removeBackground: Boolean(payload.removeBackground),
+    });
+    preparedCanvasDataUrl = canvasRes.canvasDataUrl;
+  }
+
+  const requestBody = {
+    ...payload,
+    aspectRatio: targetRatio,
+    imageDataUrl: preparedRefs[0]?.imageUrl ?? payload.imageDataUrl,
+    referenceImages: preparedRefs.length > 0 ? preparedRefs : undefined,
+    preparedCanvasDataUrl,
+    colabUrl: payload.colabUrl ?? getActiveColabUrl(),
+  };
+
+  const finalizeAspectRatio = async (result: {
+    imageDataUrl: string;
+    imageUrl?: string;
+    spaceUsed: string;
+    nodeLabel: string;
+    provider?: 'cloudflare' | 'colab-turbo' | 'huggingface';
+    elapsedMs?: number;
+    translatedPrompt: string;
+    width: number;
+    height: number;
+  }) => {
+    const fixed = await ensureResultMatchesAspectRatio(
+      result.imageDataUrl,
+      targetRatio,
+      result.translatedPrompt || payload.prompt
+    );
+    return {
+      ...result,
+      imageDataUrl: fixed.imageDataUrl,
+      imageUrl: fixed.imageDataUrl,
+      width: fixed.width,
+      height: fixed.height,
+    };
+  };
 
   if (!onProgress) {
     try {
@@ -572,12 +972,19 @@ export async function generateHfImage(
         width?: number;
         height?: number;
       }>('/api/generate-image', requestBody);
-      return normalizeServerImageResponse(serverData, payload.prompt);
+      return await finalizeAspectRatio(normalizeServerImageResponse(serverData, payload.prompt));
     } catch (err) {
       if (err instanceof HttpApiError && err.status === 400) {
         throw err;
       }
-      return await generateHfSpaceBrowserFallback(payload);
+      const fb = await generateHfSpaceBrowserFallback({
+        ...payload,
+        aspectRatio: targetRatio,
+        imageDataUrl: requestBody.imageDataUrl,
+        referenceImages: requestBody.referenceImages,
+        preparedCanvasDataUrl,
+      });
+      return await finalizeAspectRatio(fb);
     }
   }
 
@@ -608,12 +1015,22 @@ export async function generateHfImage(
           width?: number;
           height?: number;
         }>('/api/generate-image', requestBody);
-        return normalizeServerImageResponse(serverData, payload.prompt);
+        return await finalizeAspectRatio(normalizeServerImageResponse(serverData, payload.prompt));
       } catch (jsonErr) {
         if (jsonErr instanceof HttpApiError && jsonErr.status === 400) {
           throw jsonErr;
         }
-        return await generateHfSpaceBrowserFallback(payload, onProgress);
+        const fb = await generateHfSpaceBrowserFallback(
+          {
+            ...payload,
+            aspectRatio: targetRatio,
+            imageDataUrl: requestBody.imageDataUrl,
+            referenceImages: requestBody.referenceImages,
+            preparedCanvasDataUrl,
+          },
+          onProgress
+        );
+        return await finalizeAspectRatio(fb);
       }
     }
 
@@ -665,7 +1082,7 @@ export async function generateHfImage(
     }
 
     if (finalResult) {
-      return finalResult;
+      return await finalizeAspectRatio(finalResult);
     }
   } catch (streamErr) {
     if (streamErr instanceof HttpApiError && streamErr.status === 400) {
@@ -683,16 +1100,36 @@ export async function generateHfImage(
         width?: number;
         height?: number;
       }>('/api/generate-image', requestBody);
-      return normalizeServerImageResponse(serverData, payload.prompt);
+      return await finalizeAspectRatio(normalizeServerImageResponse(serverData, payload.prompt));
     } catch (jsonErr) {
       if (jsonErr instanceof HttpApiError && jsonErr.status === 400) {
         throw jsonErr;
       }
-      return await generateHfSpaceBrowserFallback(payload, onProgress);
+      const fb = await generateHfSpaceBrowserFallback(
+        {
+          ...payload,
+          aspectRatio: targetRatio,
+          imageDataUrl: requestBody.imageDataUrl,
+          referenceImages: requestBody.referenceImages,
+          preparedCanvasDataUrl,
+        },
+        onProgress
+      );
+      return await finalizeAspectRatio(fb);
     }
   }
 
-  return await generateHfSpaceBrowserFallback(payload, onProgress);
+  const fb = await generateHfSpaceBrowserFallback(
+    {
+      ...payload,
+      aspectRatio: targetRatio,
+      imageDataUrl: requestBody.imageDataUrl,
+      referenceImages: requestBody.referenceImages,
+      preparedCanvasDataUrl,
+    },
+    onProgress
+  );
+  return await finalizeAspectRatio(fb);
 }
 
 export function generateHfCharacterImage(
@@ -994,6 +1431,9 @@ async function generateHfVideoBrowserFallback(
         aspectRatio: payload.aspectRatio ?? '16:9',
         engine: 'flux-schnell',
         colabUrl: payload.colabUrl,
+        imageDataUrl: payload.imageDataUrl,
+        referenceImages: payload.referenceImages,
+        removeBackground: Boolean(payload.referenceImages && payload.referenceImages.length > 0),
       },
       onProgress
     );

@@ -15,6 +15,7 @@ import {
   Palette,
   Plus,
   RotateCcw,
+  Scissors,
   Sparkles,
   Square,
   Trash2,
@@ -29,6 +30,7 @@ import {
   generateHfImage,
   generateHfVideoClip,
   generateTalkingSceneClip,
+  removeImageBackground,
   synthesizeVoiceover,
   type TalkingShotAngle,
   type TalkingVoicePreset,
@@ -54,6 +56,7 @@ export interface CreatePresetPayload {
   cameraMotion?: CameraMotion;
   resultUrl?: string;
   openAttachPicker?: boolean;
+  referenceItem?: VideoReferenceItem;
 }
 
 interface SimpleCreateViewProps {
@@ -340,6 +343,8 @@ export function SimpleCreateView({
   }, [defaultAspectRatio]);
 
   const [attachedRefs, setAttachedRefs] = useState<VideoReferenceItem[]>([]);
+  const [removeRefBackground, setRemoveRefBackground] = useState(true);
+  const [removingBgIds, setRemovingBgIds] = useState<Record<string, boolean>>({});
   const [showAttachPicker, setShowAttachPicker] = useState(false);
   const [pickerTab, setPickerTab] = useState<'characters' | 'scenes'>('characters');
   const [pickerTarget, setPickerTarget] = useState<
@@ -413,36 +418,42 @@ export function SimpleCreateView({
   const uploadTargetLineIdRef = useRef<string | null>(null);
   const dragDepthRef = useRef(0);
 
-  const appendReferences = useCallback(
-    (incoming: VideoReferenceItem[], autoSwitchVideoWhenMultiple = true) => {
-      setAttachedRefs((prev) => {
-        const next = [...prev];
-        for (const item of incoming) {
-          if (next.length >= MAX_REFERENCES) break;
-          if (!next.some((existing) => existing.id === item.id)) {
-            next.push(item);
-          }
+  const appendReferences = useCallback((incoming: VideoReferenceItem[]) => {
+    setAttachedRefs((prev) => {
+      const next = [...prev];
+      for (const item of incoming) {
+        if (next.length >= MAX_REFERENCES) break;
+        if (!next.some((existing) => existing.id === item.id)) {
+          next.push(item);
         }
-        if (autoSwitchVideoWhenMultiple && next.length >= 2) {
-          setMode('video');
-        }
-        return next;
-      });
-    },
-    []
-  );
+      }
+      return next;
+    });
+  }, []);
+
+  const buildCharacterRefDescription = (char: CharacterProfile): string => {
+    const parts = [char.appearancePrompt?.trim()].filter(Boolean);
+    if (char.signatureProps?.trim()) {
+      parts.push(`Signature accessories/props: ${char.signatureProps.trim()}`);
+    }
+    if (char.colorPalette && char.colorPalette.length > 0) {
+      parts.push(`Color palette: ${char.colorPalette.join(', ')}`);
+    }
+    return parts.join('. ');
+  };
 
   useEffect(() => {
     if (preselectedCharacter) {
+      const fullDesc = buildCharacterRefDescription(preselectedCharacter);
       const charItem: VideoReferenceItem = {
         id: `char-ref-${preselectedCharacter.id}`,
         imageUrl:
           preselectedCharacter.avatarUrl || '/src/assets/images/char_luna_pilot_1795461026794.jpg',
         label: preselectedCharacter.name,
         role: 'Character',
-        description: preselectedCharacter.appearancePrompt,
+        description: fullDesc,
       };
-      appendReferences([charItem], false);
+      appendReferences([charItem]);
       if (!prompt.trim()) {
         setPrompt(
           `${preselectedCharacter.name} (${preselectedCharacter.appearancePrompt}) in a cinematic scene`
@@ -495,6 +506,9 @@ export function SimpleCreateView({
         setSizeLabel(matchedSize[0]);
       }
     }
+    if (pendingPreset.referenceItem) {
+      appendReferences([pendingPreset.referenceItem]);
+    }
     if (pendingPreset.resultUrl) {
       setResult({
         type:
@@ -510,7 +524,7 @@ export function SimpleCreateView({
       setResult(null);
     }
     onClearPendingPreset?.();
-  }, [pendingPreset, onClearPendingPreset]);
+  }, [pendingPreset, onClearPendingPreset, appendReferences]);
 
   const handleFilesSelected = async (files: FileList | File[]) => {
     const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'));
@@ -538,7 +552,7 @@ export function SimpleCreateView({
           } satisfies VideoReferenceItem;
         })
       );
-      appendReferences(resized, true);
+      appendReferences(resized);
       if (imageFiles.length > availableSlots) {
         setErrorMessage(`Added ${availableSlots} images (limit is ${MAX_REFERENCES} references).`);
       } else {
@@ -606,6 +620,51 @@ export function SimpleCreateView({
     });
   };
 
+  const handleToggleRefCardBgRemoval = async (refItem: VideoReferenceItem) => {
+    if (refItem.backgroundRemoved && refItem.originalImageUrl) {
+      setAttachedRefs((prev) =>
+        prev.map((item) =>
+          item.id === refItem.id
+            ? {
+                ...item,
+                imageUrl: item.originalImageUrl!,
+                backgroundRemoved: false,
+              }
+            : item
+        )
+      );
+      return;
+    }
+
+    setRemovingBgIds((prev) => ({ ...prev, [refItem.id]: true }));
+    setErrorMessage(null);
+    try {
+      const res = await removeImageBackground(refItem.imageUrl);
+      setAttachedRefs((prev) =>
+        prev.map((item) =>
+          item.id === refItem.id
+            ? {
+                ...item,
+                originalImageUrl: item.originalImageUrl ?? item.imageUrl,
+                imageUrl: res.imageDataUrl,
+                backgroundRemoved: true,
+              }
+            : item
+        )
+      );
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error ? err.message : 'Could not remove background from reference image.'
+      );
+    } finally {
+      setRemovingBgIds((prev) => {
+        const copy = { ...prev };
+        delete copy[refItem.id];
+        return copy;
+      });
+    }
+  };
+
   const toggleCharacterReference = (char: CharacterProfile) => {
     const refId = `char-ref-${char.id}`;
     const alreadyExists = attachedRefs.some((r) => r.id === refId);
@@ -613,18 +672,15 @@ export function SimpleCreateView({
       removeReference(refId);
       return;
     }
-    appendReferences(
-      [
-        {
-          id: refId,
-          imageUrl: char.avatarUrl || '/src/assets/images/char_luna_pilot_1795461026794.jpg',
-          label: char.name,
-          role: 'Character',
-          description: char.appearancePrompt,
-        },
-      ],
-      true
-    );
+    appendReferences([
+      {
+        id: refId,
+        imageUrl: char.avatarUrl || '/src/assets/images/char_luna_pilot_1795461026794.jpg',
+        label: char.name,
+        role: 'Character',
+        description: buildCharacterRefDescription(char),
+      },
+    ]);
   };
 
   const toggleSceneReference = (scene: (typeof SCENE_LIBRARY_REFS)[number]) => {
@@ -633,18 +689,15 @@ export function SimpleCreateView({
       removeReference(scene.id);
       return;
     }
-    appendReferences(
-      [
-        {
-          id: scene.id,
-          imageUrl: scene.imageUrl,
-          label: scene.label,
-          role: scene.defaultRole,
-          description: scene.description,
-        },
-      ],
-      true
-    );
+    appendReferences([
+      {
+        id: scene.id,
+        imageUrl: scene.imageUrl,
+        label: scene.label,
+        role: scene.defaultRole,
+        description: scene.description,
+      },
+    ]);
   };
 
   const handleToggleTalkingLineRecording = async (lineId: string) => {
@@ -931,20 +984,12 @@ export function SimpleCreateView({
     const rawPrompt =
       (overrides?.prompt ?? prompt).trim() ||
       (activeRefs.length > 0
-        ? `Smooth cinematic video featuring ${activeRefs
+        ? `Cinematic ${activeMode === 'image' ? 'scene' : 'video'} featuring ${activeRefs
             .map((r) => `${r.label} (${r.role})`)
             .join(', ')} with consistent character identity and lighting`
         : '');
 
     if (!rawPrompt) return;
-
-    const refDetails = activeRefs
-      .map(
-        (r, i) =>
-          `Ref ${i + 1} [${r.role}]: ${r.label}${r.description ? ` — ${r.description}` : ''}`
-      )
-      .join('; ');
-    const fullPrompt = refDetails ? `${rawPrompt}. ${refDetails}` : rawPrompt;
 
     setErrorMessage(null);
     setShowAttachPicker(false);
@@ -966,10 +1011,22 @@ export function SimpleCreateView({
       if (activeMode === 'image') {
         const res = await generateHfImage(
           {
-            prompt: fullPrompt,
+            prompt: rawPrompt,
             style: mappedStyle,
             aspectRatio: mappedRatio,
             engine: 'flux-schnell',
+            imageDataUrl: activeRefs[0]?.imageUrl,
+            removeBackground: activeRefs.length > 0 ? removeRefBackground : false,
+            referenceImages:
+              activeRefs.length > 0
+                ? activeRefs.map((r) => ({
+                    imageUrl: r.imageUrl,
+                    role: r.role,
+                    label: r.label,
+                    description: r.description,
+                    backgroundRemoved: r.backgroundRemoved,
+                  }))
+                : undefined,
           },
           (evt) => {
             if (typeof evt.progress === 'number') setProgress(evt.progress);
@@ -1170,7 +1227,7 @@ export function SimpleCreateView({
       ? hasValidTalkingInput && talkingCast.length > 0
       : Boolean(prompt.trim() || attachedRefs.length > 0);
   const bottomSpacerClass =
-    mode === 'talking' ? 'pb-[28rem]' : attachedRefs.length > 0 ? 'pb-72' : 'pb-48';
+    mode === 'talking' ? 'pb-[28rem]' : attachedRefs.length > 0 ? 'pb-80' : 'pb-48';
 
   return (
     <div
@@ -2124,106 +2181,158 @@ export function SimpleCreateView({
           {/* Sleek Multi-Image Reference Tray Above Prompt Bar (Video / Image Mode) */}
           {mode !== 'talking' && attachedRefs.length > 0 && (
             <div className="bg-[rgba(17,22,33,0.78)] backdrop-blur-2xl border border-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_20px_50px_rgba(0,0,0,0.65)] rounded-2xl p-3 space-y-2">
-              <div className="flex items-center justify-between gap-2 px-0.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-0.5">
                 <div className="text-[11px] font-medium text-[#F8FAFC] flex items-center gap-2">
                   <span className="px-2 py-0.5 rounded-full bg-[#2DD4BF]/15 border border-[#2DD4BF]/35 text-[#2DD4BF] font-semibold tabular-nums">
                     {attachedRefs.length} Reference{attachedRefs.length > 1 ? 's' : ''}
                   </span>
                   <span className="text-[#94A3B8] hidden sm:inline">
-                    Visual identity &amp; scene refs · your prompt controls all camera &amp; action
+                    Character identity preserved · prompt controls scene, action &amp; framing
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setAttachedRefs([])}
-                  className="text-[11px] text-[#94A3B8] hover:text-[#F8FAFC] cursor-pointer"
-                >
-                  Clear all
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setRemoveRefBackground((v) => !v)}
+                    aria-pressed={removeRefBackground}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-medium transition-colors cursor-pointer ${
+                      removeRefBackground
+                        ? 'bg-[#2DD4BF]/15 border-[#2DD4BF]/45 text-[#2DD4BF]'
+                        : 'bg-[#07090E]/75 border-white/10 text-[#94A3B8] hover:text-[#F8FAFC]'
+                    }`}
+                    title="Strip original background and replace with your prompted scene"
+                  >
+                    <Scissors className="w-3 h-3" />
+                    Remove BG: {removeRefBackground ? 'On' : 'Off'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAttachedRefs([])}
+                    className="text-[11px] text-[#94A3B8] hover:text-[#F8FAFC] cursor-pointer"
+                  >
+                    Clear all
+                  </button>
+                </div>
               </div>
 
               <div className="flex items-stretch gap-2.5 overflow-x-auto pb-1">
-                {attachedRefs.map((ref, idx) => (
-                  <div
-                    key={ref.id}
-                    draggable
-                    onDragStart={() => setDragRefIndex(idx)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      if (dragRefIndex !== null && dragRefIndex !== idx) {
-                        moveReference(dragRefIndex, idx);
-                      }
-                      setDragRefIndex(null);
-                    }}
-                    onDragEnd={() => setDragRefIndex(null)}
-                    className="w-32 shrink-0 rounded-2xl bg-[rgba(17,22,33,0.72)] border border-white/10 hover:border-[#2DD4BF]/45 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] overflow-hidden flex flex-col transition-all"
-                  >
-                    <div className="relative h-20 bg-black">
-                      <img
-                        src={ref.imageUrl}
-                        alt={ref.label}
-                        className="w-full h-full object-cover"
-                      />
-                      <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-[#07090E]/85 text-[#2DD4BF] border border-[#2DD4BF]/40 text-[10px] font-bold tabular-nums">
-                        Ref {idx + 1}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => removeReference(ref.id)}
-                        className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-[#07090E]/85 hover:bg-red-500 text-[#F8FAFC] flex items-center justify-center border border-white/10 cursor-pointer"
-                        aria-label={`Remove ${ref.label}`}
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-
-                    <div className="p-1.5 space-y-1">
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="text-[10px] text-[#F8FAFC] font-medium truncate">
-                          {ref.label}
+                {attachedRefs.map((ref, idx) => {
+                  const isStrippingBg = Boolean(removingBgIds[ref.id]);
+                  return (
+                    <div
+                      key={ref.id}
+                      draggable
+                      onDragStart={() => setDragRefIndex(idx)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (dragRefIndex !== null && dragRefIndex !== idx) {
+                          moveReference(dragRefIndex, idx);
+                        }
+                        setDragRefIndex(null);
+                      }}
+                      onDragEnd={() => setDragRefIndex(null)}
+                      className="w-34 shrink-0 rounded-2xl bg-[rgba(17,22,33,0.72)] border border-white/10 hover:border-[#2DD4BF]/45 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] overflow-hidden flex flex-col transition-all"
+                    >
+                      <div className="relative h-20 bg-[#0B0F18]">
+                        <img
+                          src={ref.imageUrl}
+                          alt={ref.label}
+                          className="w-full h-full object-contain"
+                        />
+                        <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-[#07090E]/85 text-[#2DD4BF] border border-[#2DD4BF]/40 text-[10px] font-bold tabular-nums">
+                          Ref {idx + 1}
                         </span>
-                        <div className="flex items-center shrink-0">
-                          <button
-                            type="button"
-                            disabled={idx === 0}
-                            onClick={() => moveReference(idx, idx - 1)}
-                            className="p-0.5 text-[#64748B] hover:text-[#F8FAFC] disabled:opacity-25 cursor-pointer"
-                            aria-label="Move left"
-                            title="Move left"
-                          >
-                            <ChevronLeft className="w-3 h-3" />
-                          </button>
-                          <button
-                            type="button"
-                            disabled={idx === attachedRefs.length - 1}
-                            onClick={() => moveReference(idx, idx + 1)}
-                            className="p-0.5 text-[#64748B] hover:text-[#F8FAFC] disabled:opacity-25 cursor-pointer"
-                            aria-label="Move right"
-                            title="Move right"
-                          >
-                            <ChevronRight className="w-3 h-3" />
-                          </button>
-                        </div>
+                        {ref.backgroundRemoved && (
+                          <span className="absolute bottom-1 left-1.5 px-1.5 py-0.5 rounded bg-[#2DD4BF]/90 text-[#07090E] text-[9px] font-bold">
+                            BG Removed
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => removeReference(ref.id)}
+                          className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-[#07090E]/85 hover:bg-red-500 text-[#F8FAFC] flex items-center justify-center border border-white/10 cursor-pointer"
+                          aria-label={`Remove ${ref.label}`}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
                       </div>
 
-                      <select
-                        value={ref.role}
-                        onChange={(e) =>
-                          updateReferenceRole(ref.id, e.target.value as ReferenceRole)
-                        }
-                        aria-label={`Role for Ref ${idx + 1}`}
-                        className="w-full bg-[#07090E]/80 border border-white/10 rounded-lg px-1.5 py-1 text-[10px] font-medium text-[#2DD4BF] focus:outline-none focus:border-[#2DD4BF]/50 cursor-pointer"
-                      >
-                        {REFERENCE_ROLES.map((role) => (
-                          <option key={role} value={role} className="bg-[#0B0F18] text-[#F8FAFC]">
-                            {role}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="p-1.5 space-y-1">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[10px] text-[#F8FAFC] font-medium truncate">
+                            {ref.label}
+                          </span>
+                          <div className="flex items-center shrink-0">
+                            <button
+                              type="button"
+                              disabled={idx === 0}
+                              onClick={() => moveReference(idx, idx - 1)}
+                              className="p-0.5 text-[#64748B] hover:text-[#F8FAFC] disabled:opacity-25 cursor-pointer"
+                              aria-label="Move left"
+                              title="Move left"
+                            >
+                              <ChevronLeft className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={idx === attachedRefs.length - 1}
+                              onClick={() => moveReference(idx, idx + 1)}
+                              className="p-0.5 text-[#64748B] hover:text-[#F8FAFC] disabled:opacity-25 cursor-pointer"
+                              aria-label="Move right"
+                              title="Move right"
+                            >
+                              <ChevronRight className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <select
+                          value={ref.role}
+                          onChange={(e) =>
+                            updateReferenceRole(ref.id, e.target.value as ReferenceRole)
+                          }
+                          aria-label={`Role for Ref ${idx + 1}`}
+                          className="w-full bg-[#07090E]/80 border border-white/10 rounded-lg px-1.5 py-1 text-[10px] font-medium text-[#2DD4BF] focus:outline-none focus:border-[#2DD4BF]/50 cursor-pointer"
+                        >
+                          {REFERENCE_ROLES.map((role) => (
+                            <option key={role} value={role} className="bg-[#0B0F18] text-[#F8FAFC]">
+                              {role}
+                            </option>
+                          ))}
+                        </select>
+
+                        <button
+                          type="button"
+                          disabled={isStrippingBg}
+                          onClick={() => void handleToggleRefCardBgRemoval(ref)}
+                          className={`w-full inline-flex items-center justify-center gap-1 rounded-lg px-1.5 py-1 text-[10px] font-medium border transition-colors cursor-pointer ${
+                            ref.backgroundRemoved
+                              ? 'bg-white/[0.05] hover:bg-white/[0.1] border-white/10 text-[#94A3B8]'
+                              : 'bg-[#2DD4BF]/10 hover:bg-[#2DD4BF]/20 border-[#2DD4BF]/30 text-[#2DD4BF]'
+                          }`}
+                        >
+                          {isStrippingBg ? (
+                            <>
+                              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                              Removing...
+                            </>
+                          ) : ref.backgroundRemoved ? (
+                            <>
+                              <RotateCcw className="w-2.5 h-2.5" />
+                              Restore BG
+                            </>
+                          ) : (
+                            <>
+                              <Scissors className="w-2.5 h-2.5" />
+                              Remove BG Now
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {/* + Add More Slot */}
                 {attachedRefs.length < MAX_REFERENCES && (

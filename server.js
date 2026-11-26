@@ -44,6 +44,12 @@ var IMAGE_DIMENSIONS_BY_RATIO = {
   "1:1": { w: 1024, h: 1024 },
   "21:9": { w: 1344, h: 576 }
 };
+var CLOUDFLARE_DIMENSIONS_BY_RATIO = {
+  "16:9": { w: 1024, h: 576 },
+  "9:16": { w: 576, h: 1024 },
+  "1:1": { w: 1024, h: 1024 },
+  "21:9": { w: 1008, h: 432 }
+};
 var SVG_VIEWBOX_BY_RATIO = {
   "16:9": { w: 640, h: 360 },
   "9:16": { w: 360, h: 640 },
@@ -55,6 +61,15 @@ var FLUX_SPACES = [
   "black-forest-labs/FLUX.1-schnell",
   "stabilityai/stable-diffusion-3.5-large-turbo",
   "prodia/fast-stable-diffusion"
+];
+var BACKGROUND_REMOVAL_SPACES = [
+  "not-lain/background-removal",
+  "briaai/BRIA-RMBG-1.4",
+  "ZhengPeng7/BiRefNet_demo"
+];
+var REFERENCE_EDIT_SPACES = [
+  "black-forest-labs/FLUX.1-Kontext-dev",
+  "Qwen/Qwen-Image-Edit"
 ];
 var SDXL_SPACES = [
   "stabilityai/stable-diffusion-3.5-large-turbo",
@@ -627,8 +642,9 @@ function detectImageBufferMime(buf, headerContentType = "") {
 }
 async function runCloudflareFluxImage(fullPrompt, aspectRatio, accountId, apiToken) {
   const started = Date.now();
+  const cfDims = CLOUDFLARE_DIMENSIONS_BY_RATIO[aspectRatio] ?? CLOUDFLARE_DIMENSIONS_BY_RATIO["16:9"];
   const isWarmStorybook = fullPrompt.includes("Pro-Mist 1/2");
-  const ratioCue = aspectRatio === "1:1" ? "" : aspectRatio === "9:16" ? ", vertical 9:16 portrait composition" : aspectRatio === "21:9" ? ", ultra-wide 21:9 anamorphic framing" : isWarmStorybook ? "" : ", widescreen 16:9 cinema composition";
+  const ratioCue = aspectRatio === "1:1" ? "" : aspectRatio === "9:16" ? ", vertical 9:16 portrait composition, full character uncropped" : aspectRatio === "21:9" ? ", ultra-wide 21:9 anamorphic framing, expanded full-scene environment" : isWarmStorybook ? "" : ", wide 16:9 landscape cinema composition, expanded full-scene environment";
   const promptText = `${fullPrompt}${ratioCue}`.slice(0, 2e3);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 18e3);
@@ -644,6 +660,8 @@ async function runCloudflareFluxImage(fullPrompt, aspectRatio, accountId, apiTok
       },
       body: JSON.stringify({
         prompt: promptText,
+        width: cfDims.w,
+        height: cfDims.h,
         steps: 4
       }),
       signal: controller.signal
@@ -661,7 +679,9 @@ async function runCloudflareFluxImage(fullPrompt, aspectRatio, accountId, apiTok
     if (binaryMime && rawBuf.length > 64) {
       return {
         imageDataUrl: `data:${binaryMime};base64,${rawBuf.toString("base64")}`,
-        elapsedMs: Date.now() - started
+        elapsedMs: Date.now() - started,
+        width: cfDims.w,
+        height: cfDims.h
       };
     }
     let json;
@@ -678,7 +698,9 @@ async function runCloudflareFluxImage(fullPrompt, aspectRatio, accountId, apiTok
     const imageDataUrl = rawImage.startsWith("data:image/") ? rawImage : `data:${detectBase64ImageMime(rawImage)};base64,${rawImage}`;
     return {
       imageDataUrl,
-      elapsedMs: Date.now() - started
+      elapsedMs: Date.now() - started,
+      width: cfDims.w,
+      height: cfDims.h
     };
   } finally {
     clearTimeout(timer);
@@ -826,7 +848,7 @@ async function enhanceCinemaVideoPrompt(options) {
       `1. Expand the user's plain-English camera & acting directions into rich 3D animation direction prompts.`,
       isWarmStorybook ? `2. MANDATORY WARM STORYBOOK 3D LOOK: Compose as a ${WARM_STORYBOOK_3D_FRAMING}. Specify soft-focus vintage cinema lens, dreamy halation, warm sunlit bloom, gentle Pro-Mist 1/2 diffusion, low micro-contrast, soft pastel matte clay and felt textures, slightly blurred soft edges, warm overexposed sunlit sky in background, and 35mm film softness. Strictly avoid razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, glossy studio lighting, or close-up portraits.` : `2. Specify cinema depth-of-field, subsurface skin/fur scattering (when animated), expressive facial/eye acting, warm rim lighting, and smooth continuous camera trajectories.`,
       `3. Keep EVERY detail, action, subject, and angle the user wrote intact \u2014 never override or soften their camera trajectory.`,
-      refs.length > 0 ? `4. Treat ALL ${refs.length} uploaded reference image(s) strictly as visual identity, character, outfit, prop, and environment/style references. Extract exact facial features, hair, outfit colors/fabrics, props, and background/lighting details directly into the text description.` : isWarmStorybook ? `4. Build warm golden sunlit atmosphere, layered foreground/midground/background depth, gentle natural character interaction, and dreamy halation matching Warm Storybook 3D.` : `4. Add rich lighting, motion continuity, and atmospheric clarity matching the ${style} aesthetic.`,
+      refs.length > 0 ? `4. Treat ALL ${refs.length} uploaded reference image(s) strictly as visual identity, character, outfit, prop, and environment/style references\u2014NEVER copy original framing or background unchanged unless requested. Preserve EVERY character's exact face, hairstyle, skin tone/fur, body proportions, clothing, colors, and signature accessories directly inside the text description.` : isWarmStorybook ? `4. Build warm golden sunlit atmosphere, layered foreground/midground/background depth, gentle natural character interaction, and dreamy halation matching Warm Storybook 3D.` : `4. Add rich lighting, motion continuity, and atmospheric clarity matching the ${style} aesthetic.`,
       `5. Set canStartFromSingleImageFrame to true ONLY if there is 1 reference image AND the user's prompt starts directly from that exact composition without requesting a different starting angle.`
     ].join("\n")
   });
@@ -1170,11 +1192,291 @@ async function tryGradioImageEndpoint(target, nodeLabel, fullPrompt, dims, useSd
     imageDataUrl: `data:${contentType};base64,${buf.toString("base64")}`
   };
 }
+async function removeBackgroundServer(imageInput) {
+  const resolved = resolveImageInputToBuffer(imageInput);
+  if (!resolved) {
+    throw new Error("Could not read image for background removal.");
+  }
+  const blob = new Blob([new Uint8Array(resolved.buffer)], { type: resolved.mimeType });
+  const hfToken = getHfToken();
+  let lastError = "Background removal services are temporarily busy.";
+  if (hfToken) {
+    for (const modelId of ["briaai/RMBG-1.4", "ZhengPeng7/BiRefNet"]) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 16e3);
+      try {
+        const res = await fetch(`https://router.huggingface.co/hf-inference/models/${modelId}`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${hfToken}`,
+            "Content-Type": resolved.mimeType
+          },
+          body: new Uint8Array(resolved.buffer),
+          signal: controller.signal
+        });
+        if (res.ok) {
+          const outBuf = Buffer2.from(await res.arrayBuffer());
+          const mime = detectImageBufferMime(outBuf, res.headers.get("content-type") || "");
+          if (mime && outBuf.length > 128) {
+            return {
+              imageDataUrl: `data:${mime};base64,${outBuf.toString("base64")}`,
+              spaceUsed: modelId
+            };
+          }
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  }
+  const clientOptions = getHfGradioOptions();
+  for (const spaceId of BACKGROUND_REMOVAL_SPACES) {
+    try {
+      const client = await withTimeout(
+        Client.connect(spaceId, clientOptions),
+        12e3,
+        `${spaceId} connection timed out.`
+      );
+      let endpoint = "/image";
+      let args = { image: handle_file(blob) };
+      if (spaceId === "not-lain/background-removal") {
+        endpoint = "/png";
+        args = { f: handle_file(blob) };
+      } else if (spaceId === "briaai/BRIA-RMBG-1.4") {
+        endpoint = "/run";
+        args = { image: handle_file(blob) };
+      } else if (spaceId === "ZhengPeng7/BiRefNet_demo") {
+        endpoint = "/image";
+        args = { images: handle_file(blob), resolution: "", weights_file: "General" };
+      }
+      const pred = await withTimeout(
+        client.predict(endpoint, args),
+        28e3,
+        `${spaceId} background removal timed out.`
+      );
+      const outUrl = extractGradioMediaUrl(pred.data);
+      if (!outUrl) continue;
+      const imgRes = await withTimeout(
+        fetch(outUrl, { headers: getHfAuthHeadersForUrl(outUrl) }),
+        15e3,
+        `${spaceId} image download timed out.`
+      );
+      if (!imgRes.ok) continue;
+      const outBuf = Buffer2.from(await imgRes.arrayBuffer());
+      const mime = detectImageBufferMime(outBuf, imgRes.headers.get("content-type") || "") || "image/png";
+      return {
+        imageDataUrl: `data:${mime};base64,${outBuf.toString("base64")}`,
+        spaceUsed: spaceId
+      };
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+  }
+  throw new Error(lastError);
+}
+async function enhanceCinemaImagePrompt(options) {
+  const { basePrompt, refs, style, aspectRatio, removeBackground } = options;
+  const trimmedPrompt = basePrompt.trim();
+  const isWarmStorybook = style === "Warm Storybook 3D";
+  const styleCue = STYLE_PROMPT_DIRECTIVES[style] ?? `${style} visual aesthetic`;
+  const metadataSummary = refs.map(
+    (r, idx) => `Ref ${idx + 1} (${r.role}${r.label ? ` - ${r.label}` : ""})${r.description ? `: ${r.description}` : ""}`
+  ).join("; ");
+  const bgDirective = removeBackground ? "Completely replace the original studio or uploaded background with the new requested environment filling the entire frame edge-to-edge." : "Generate and expand the full requested environment cleanly around the character(s).";
+  const fallbackGenPrompt = isWarmStorybook ? `${trimmedPrompt}${metadataSummary ? `. Character identity & details: ${metadataSummary}` : ""}. Full uncropped character(s) properly proportioned inside wide ${aspectRatio} frame, ${bgDirective} ${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}` : `${trimmedPrompt}${metadataSummary ? `. Character identity & details: ${metadataSummary}` : ""}. Full uncropped character(s) (head, body, clothing, and accessories completely visible and unstretched) placed naturally in ${aspectRatio} composition. ${bgDirective} Style: ${styleCue}, no text, no watermark`;
+  const fallbackEditPrompt = `Using the exact character appearance from the input image (preserving face, hairstyle, skin tone, body proportions, clothing, colors, and accessories without cropping or stretching), render the scene in full ${aspectRatio} composition: ${trimmedPrompt}. ${bgDirective} Do not reproduce the original photo background or empty margins; generate the full surrounding environment in ${style} style.`;
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey || refs.length === 0) {
+    return { editPrompt: fallbackEditPrompt, generationPrompt: fallbackGenPrompt };
+  }
+  const ai = getGeminiClient();
+  const parts = [];
+  for (let i = 0; i < refs.length; i++) {
+    const r = refs[i];
+    parts.push({
+      text: `Reference Image ${i + 1} | Role: ${r.role} | Name: ${r.label}${r.description ? ` | Notes: ${r.description}` : ""}`
+    });
+    parts.push({
+      inlineData: {
+        mimeType: r.mimeType,
+        data: r.buffer.toString("base64")
+      }
+    });
+  }
+  parts.push({
+    text: [
+      `USER PROMPT (PRIMARY AUTHORITY \u2014 controls scene, environment, actions, pose, camera angle, lighting, and composition): "${trimmedPrompt}"`,
+      `Target Output Aspect Ratio: ${aspectRatio}`,
+      `Visual Style: ${style}`,
+      `Remove Original Background: ${removeBackground ? "YES \u2014 completely replace original background" : "NO \u2014 seamlessly expand/adapt scene to prompt"}`,
+      `RULES:`,
+      `1. The uploaded reference image(s) ONLY define character/subject identity and visual appearance (face, hairstyle, skin tone/fur, body proportions, exact clothing, colors, and accessories). NEVER reproduce the reference image unchanged or copy its background/framing.`,
+      `2. The USER PROMPT controls 100% of the scene, environment, character actions/pose, camera angle, lighting, and composition.`,
+      `3. Preserve EVERY character's entire body cleanly (head, body, clothing, accessories) properly positioned and proportioned inside the ${aspectRatio} canvas \u2014 expand the surrounding environment to fill ${aspectRatio} with zero stretching or cropping.`,
+      `4. If multiple characters (e.g., Milo & Friends) are provided, describe each character's exact look distinctly so none blend together or lose accessories.`
+    ].join("\n")
+  });
+  for (const model of ["gemini-4-hydrogen", "gemini-3.1-flash-lite"]) {
+    try {
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model,
+          contents: { parts },
+          config: {
+            systemInstruction: "You are a lead visual development & character-consistency director. Extract exact character identity details from reference images and fuse them with the user prompt to produce two prompts: editPrompt (for image-to-image reference editors) and generationPrompt (standalone self-contained prompt).",
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                editPrompt: {
+                  type: Type.STRING,
+                  description: "70-110 word prompt for Flux Kontext / Qwen-Image-Edit telling the editor to keep the exact character identity from the input image while posing them in the new scene, camera angle, lighting, and replacing/expanding the background across the full target aspect ratio."
+                },
+                generationPrompt: {
+                  type: Type.STRING,
+                  description: "100-150 word standalone Flux/SDXL visual prompt containing hyper-specific character details (face, hair, skin tone, proportions, outfit, colors, accessories) placed inside the exact user-requested scene, action, camera angle, lighting, and target aspect ratio."
+                }
+              },
+              required: ["editPrompt", "generationPrompt"]
+            }
+          }
+        }),
+        11e3,
+        "Image reference prompt analysis timed out."
+      );
+      const parsed = JSON.parse((response.text ?? "{}").trim());
+      const editPrompt = String(parsed.editPrompt ?? "").trim().replace(/\s+/g, " ");
+      const generationPrompt = String(parsed.generationPrompt ?? "").trim().replace(/\s+/g, " ");
+      if (editPrompt.length >= 24 && generationPrompt.length >= 24) {
+        return {
+          editPrompt: editPrompt.slice(0, 820),
+          generationPrompt: generationPrompt.slice(0, 920)
+        };
+      }
+    } catch {
+    }
+  }
+  return { editPrompt: fallbackEditPrompt, generationPrompt: fallbackGenPrompt };
+}
+async function tryReferenceEditSpaces(spaceId, inputImageDataUrl, editPrompt, timeoutMs) {
+  const resolved = resolveImageInputToBuffer(inputImageDataUrl);
+  if (!resolved) {
+    throw new Error("Could not decode prepared reference canvas.");
+  }
+  const blob = new Blob([new Uint8Array(resolved.buffer)], { type: resolved.mimeType });
+  const client = await withTimeout(
+    Client.connect(spaceId, getHfGradioOptions()),
+    11e3,
+    `${spaceId} connection timed out.`
+  );
+  let endpoint = "/infer";
+  let payload;
+  if (spaceId === "Qwen/Qwen-Image-Edit") {
+    payload = {
+      image: handle_file(blob),
+      prompt: editPrompt,
+      seed: 0,
+      randomize_seed: true,
+      true_guidance_scale: 4,
+      num_inference_steps: 28,
+      rewrite_prompt: true
+    };
+  } else {
+    payload = {
+      input_image: handle_file(blob),
+      prompt: editPrompt,
+      seed: 0,
+      randomize_seed: true,
+      guidance_scale: 3.5,
+      steps: 24
+    };
+  }
+  const pred = await withTimeout(
+    client.predict(endpoint, payload),
+    timeoutMs,
+    `${spaceId} inference timed out.`
+  );
+  const outUrl = extractGradioMediaUrl(pred.data);
+  if (!outUrl) {
+    throw new Error(`${spaceId} did not return a valid image URL.`);
+  }
+  const imgRes = await withTimeout(
+    fetch(outUrl, { headers: getHfAuthHeadersForUrl(outUrl) }),
+    15e3,
+    `${spaceId} image download timed out.`
+  );
+  if (!imgRes.ok) {
+    throw new Error(`Failed to download image from ${spaceId}.`);
+  }
+  const outBuf = Buffer2.from(await imgRes.arrayBuffer());
+  const mime = detectImageBufferMime(outBuf, imgRes.headers.get("content-type") || "") || "image/png";
+  return {
+    imageDataUrl: `data:${mime};base64,${outBuf.toString("base64")}`
+  };
+}
 async function runResilientImageGeneration(options, onStatus) {
   const safeRatio = ALLOWED_RATIOS.includes(options.aspectRatio) ? options.aspectRatio : "16:9";
   const dims = IMAGE_DIMENSIONS_BY_RATIO[safeRatio] ?? IMAGE_DIMENSIONS_BY_RATIO["16:9"];
   const useSdxl = options.engine === "sdxl";
-  const fullPrompt = buildTranslatedImagePrompt(options.prompt, options.style);
+  const normalizedRefs = [];
+  if (Array.isArray(options.referenceImages)) {
+    for (let idx = 0; idx < Math.min(8, options.referenceImages.length); idx++) {
+      const item = options.referenceImages[idx];
+      if (!item || typeof item.imageUrl !== "string") continue;
+      const resolved = resolveImageInputToBuffer(item.imageUrl);
+      if (!resolved) continue;
+      normalizedRefs.push({
+        imageUrl: item.imageUrl,
+        role: typeof item.role === "string" && item.role.trim() ? item.role.trim() : "Character",
+        label: typeof item.label === "string" && item.label.trim() ? item.label.trim().slice(0, 80) : `Ref ${idx + 1}`,
+        description: typeof item.description === "string" ? item.description.trim().slice(0, 420) : "",
+        buffer: resolved.buffer,
+        mimeType: resolved.mimeType
+      });
+    }
+  }
+  if (normalizedRefs.length === 0 && typeof options.imageDataUrl === "string") {
+    const single = resolveImageInputToBuffer(options.imageDataUrl);
+    if (single) {
+      normalizedRefs.push({
+        imageUrl: options.imageDataUrl,
+        role: "Character",
+        label: "Reference Character",
+        description: "",
+        buffer: single.buffer,
+        mimeType: single.mimeType
+      });
+    }
+  }
+  let effectiveInputCanvasUrl = typeof options.preparedCanvasDataUrl === "string" && options.preparedCanvasDataUrl.startsWith("data:image/") ? options.preparedCanvasDataUrl : normalizedRefs[0]?.imageUrl;
+  if (options.removeBackground && normalizedRefs.length > 0 && !options.preparedCanvasDataUrl) {
+    try {
+      const bgRemoved = await removeBackgroundServer(normalizedRefs[0].imageUrl);
+      effectiveInputCanvasUrl = bgRemoved.imageDataUrl;
+      const updatedBuf = resolveImageInputToBuffer(bgRemoved.imageDataUrl);
+      if (updatedBuf) {
+        normalizedRefs[0].imageUrl = bgRemoved.imageDataUrl;
+        normalizedRefs[0].buffer = updatedBuf.buffer;
+        normalizedRefs[0].mimeType = updatedBuf.mimeType;
+      }
+    } catch {
+    }
+  }
+  let fullPrompt = buildTranslatedImagePrompt(options.prompt, options.style);
+  let editPrompt = fullPrompt;
+  if (normalizedRefs.length > 0) {
+    const enhanced = await enhanceCinemaImagePrompt({
+      basePrompt: options.prompt,
+      refs: normalizedRefs,
+      style: options.style,
+      aspectRatio: safeRatio,
+      removeBackground: Boolean(options.removeBackground)
+    });
+    editPrompt = buildTranslatedImagePrompt(enhanced.editPrompt, options.style);
+    fullPrompt = buildTranslatedImagePrompt(enhanced.generationPrompt, options.style);
+  }
   const cfCreds = !useSdxl ? getCloudflareCredentials() : null;
   const hfToken = getHfToken();
   const validColab = validateColabGradioUrl(options.colabUrl);
@@ -1183,9 +1485,10 @@ async function runResilientImageGeneration(options, onStatus) {
   const liveSpaces = shouldUseGradioSpaces ? await discoverRunningImageSpaces(useSdxl) : [];
   const hfCandidates = customSpace ? [customSpace, ...liveSpaces.filter((s) => s !== customSpace)] : liveSpaces;
   const maxGradioAttempts = process.env.VERCEL && !customSpace ? options.allowGradioFallback ? Math.min(2, hfCandidates.length) : 0 : hfCandidates.length;
+  const tryRefEdit = Boolean(normalizedRefs.length > 0 && effectiveInputCanvasUrl);
   const totalSteps = Math.max(
     1,
-    (validColab ? 1 : 0) + (cfCreds ? 1 : 0) + (hfToken ? 1 : 0) + maxGradioAttempts
+    (validColab ? 1 : 0) + (tryRefEdit ? REFERENCE_EDIT_SPACES.length : 0) + (cfCreds ? 1 : 0) + (hfToken ? 1 : 0) + maxGradioAttempts
   );
   let stepNum = 0;
   let lastError = `Primary ${useSdxl ? "SDXL / SD 3.5" : "Flux.1"} nodes unavailable`;
@@ -1226,6 +1529,44 @@ async function runResilientImageGeneration(options, onStatus) {
       lastError = err instanceof Error ? err.message : String(err);
     }
   }
+  if (tryRefEdit && effectiveInputCanvasUrl) {
+    const editTimeoutMs = process.env.VERCEL ? 22e3 : 38e3;
+    for (const editSpace of REFERENCE_EDIT_SPACES) {
+      stepNum++;
+      const started = Date.now();
+      const nodeLabel = `Reference Scene Composer (${editSpace})`;
+      onStatus?.({
+        space: editSpace,
+        nodeLabel,
+        provider: "huggingface",
+        attempt: stepNum,
+        totalAttempts: totalSteps,
+        progress: Math.min(48, 22 + stepNum * 8),
+        translatedPrompt: editPrompt,
+        message: `Composing reference character into ${safeRatio} scene...`
+      });
+      try {
+        const edited = await tryReferenceEditSpaces(
+          editSpace,
+          effectiveInputCanvasUrl,
+          editPrompt,
+          editTimeoutMs
+        );
+        return {
+          imageDataUrl: edited.imageDataUrl,
+          spaceUsed: editSpace,
+          nodeLabel,
+          provider: "huggingface",
+          elapsedMs: Date.now() - started,
+          translatedPrompt: editPrompt,
+          width: dims.w,
+          height: dims.h
+        };
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+  }
   if (cfCreds) {
     stepNum++;
     const nodeLabel = "Cloudflare Workers AI (Instant 1\u20133s)";
@@ -1235,7 +1576,7 @@ async function runResilientImageGeneration(options, onStatus) {
       provider: "cloudflare",
       attempt: stepNum,
       totalAttempts: totalSteps,
-      progress: 35,
+      progress: 55,
       translatedPrompt: fullPrompt,
       message: validColab ? `Colab node offline \u2014 instant rendering via Cloudflare Workers AI (@cf/black-forest-labs/flux-1-schnell)...` : `Instant zero-queue render via Cloudflare Workers AI (@cf/black-forest-labs/flux-1-schnell)...`
     });
@@ -1253,8 +1594,8 @@ async function runResilientImageGeneration(options, onStatus) {
         provider: "cloudflare",
         elapsedMs: cfRes.elapsedMs,
         translatedPrompt: fullPrompt,
-        width: 1024,
-        height: 1024
+        width: cfRes.width,
+        height: cfRes.height
       };
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
@@ -1269,7 +1610,7 @@ async function runResilientImageGeneration(options, onStatus) {
       provider: "huggingface",
       attempt: stepNum,
       totalAttempts: totalSteps,
-      progress: 52,
+      progress: 65,
       translatedPrompt: fullPrompt,
       message: cfCreds ? `${lastError} \u2014 falling back to Direct Hugging Face Inference API...` : `Rendering via Direct Hugging Face Inference API...`
     });
@@ -1294,14 +1635,14 @@ async function runResilientImageGeneration(options, onStatus) {
     const candidate = hfCandidates[i];
     const nodeLabel = getNodeLabel(candidate);
     const started = Date.now();
-    const baseProgress = Math.round(55 + (i + 0.25) / Math.max(1, maxGradioAttempts) * 25);
+    const baseProgress = Math.round(70 + (i + 0.25) / Math.max(1, maxGradioAttempts) * 20);
     onStatus?.({
       space: candidate,
       nodeLabel,
       provider: "huggingface",
       attempt: stepNum,
       totalAttempts: totalSteps,
-      progress: Math.min(82, baseProgress),
+      progress: Math.min(90, baseProgress),
       translatedPrompt: fullPrompt,
       message: stepNum > 1 ? `${lastError} \u2014 failing over to ${nodeLabel} (${candidate})...` : `Connecting to ${nodeLabel} (${candidate})...`
     });
@@ -2014,6 +2355,29 @@ async function handleVoiceRequest(request) {
     return Response.json({ error: message }, { status });
   }
 }
+async function handleRemoveBackgroundRequest(request) {
+  try {
+    const parsedBody = await parseJsonBody(request);
+    if (!parsedBody.ok) return parsedBody.response;
+    const { imageDataUrl, imageUrl } = parsedBody.data;
+    const targetInput = typeof imageDataUrl === "string" && imageDataUrl.trim() ? imageDataUrl : typeof imageUrl === "string" && imageUrl.trim() ? imageUrl : "";
+    if (!targetInput) {
+      return Response.json(
+        { error: "Please provide an image to remove the background from." },
+        { status: 400 }
+      );
+    }
+    const result = await removeBackgroundServer(targetInput);
+    return Response.json(result);
+  } catch (err) {
+    return Response.json(
+      {
+        error: err instanceof Error ? err.message : "Background removal failed."
+      },
+      { status: 503 }
+    );
+  }
+}
 async function handleGenerateImageRequest(request, forceStream) {
   try {
     const parsedBody = await parseJsonBody(request);
@@ -2026,7 +2390,11 @@ async function handleGenerateImageRequest(request, forceStream) {
       aspectRatio = "16:9",
       engine = "flux-schnell",
       spaceId,
-      colabUrl
+      colabUrl,
+      imageDataUrl,
+      preparedCanvasDataUrl,
+      removeBackground,
+      referenceImages
     } = parsedBody.data;
     if (typeof prompt !== "string" || prompt.trim().length < 4) {
       if (wantsStream) {
@@ -2042,22 +2410,24 @@ async function handleGenerateImageRequest(request, forceStream) {
         { status: 400 }
       );
     }
+    const genOptions = {
+      prompt,
+      style: String(style),
+      aspectRatio: String(aspectRatio),
+      engine: String(engine),
+      spaceId: typeof spaceId === "string" ? spaceId : void 0,
+      colabUrl: typeof colabUrl === "string" ? colabUrl : void 0,
+      imageDataUrl: typeof imageDataUrl === "string" ? imageDataUrl : void 0,
+      preparedCanvasDataUrl: typeof preparedCanvasDataUrl === "string" ? preparedCanvasDataUrl : void 0,
+      removeBackground: Boolean(removeBackground),
+      referenceImages: Array.isArray(referenceImages) ? referenceImages : void 0
+    };
     if (wantsStream) {
       return createSseStreamResponse(async (sendEvent) => {
         try {
-          const result = await runResilientImageGeneration(
-            {
-              prompt,
-              style: String(style),
-              aspectRatio: String(aspectRatio),
-              engine: String(engine),
-              spaceId: typeof spaceId === "string" ? spaceId : void 0,
-              colabUrl: typeof colabUrl === "string" ? colabUrl : void 0
-            },
-            (statusEvt) => {
-              sendEvent({ type: "status", ...statusEvt });
-            }
-          );
+          const result = await runResilientImageGeneration(genOptions, (statusEvt) => {
+            sendEvent({ type: "status", ...statusEvt });
+          });
           sendEvent({ type: "complete", ...result, imageUrl: result.imageDataUrl });
         } catch (err) {
           sendEvent({
@@ -2068,14 +2438,7 @@ async function handleGenerateImageRequest(request, forceStream) {
       });
     }
     try {
-      const result = await runResilientImageGeneration({
-        prompt,
-        style: String(style),
-        aspectRatio: String(aspectRatio),
-        engine: String(engine),
-        spaceId: typeof spaceId === "string" ? spaceId : void 0,
-        colabUrl: typeof colabUrl === "string" ? colabUrl : void 0
-      });
+      const result = await runResilientImageGeneration(genOptions);
       return Response.json({ ...result, imageUrl: result.imageDataUrl });
     } catch (err) {
       return Response.json(
@@ -2209,7 +2572,14 @@ async function streamStandardVideo(body, sendEvent) {
       aspectRatio: safeRatio,
       engine: "flux-schnell",
       colabUrl: typeof colabUrl === "string" ? colabUrl : void 0,
-      allowGradioFallback: true
+      allowGradioFallback: true,
+      removeBackground: normalizedRefs.length > 0,
+      referenceImages: normalizedRefs.length > 0 ? normalizedRefs.map((r) => ({
+        imageUrl: r.imageUrl,
+        role: r.role,
+        label: r.label,
+        description: r.description
+      })) : void 0
     });
     const resolvedBlob = resolveImageInputToBlob(startImg.imageDataUrl);
     if (!resolvedBlob) {
@@ -2886,6 +3256,9 @@ async function handleApiRoute(request) {
         case "/api/generate-image":
         case "/api/hf/generate-image":
           return await handleGenerateImageRequest(request);
+        case "/api/remove-background":
+        case "/api/hf/remove-background":
+          return await handleRemoveBackgroundRequest(request);
         case "/api/hf/generate-image-stream":
           return await handleGenerateImageRequest(request, true);
         case "/api/generate-video":
