@@ -5,6 +5,9 @@ import {
   getDocFromServer,
   getFirestore,
   initializeFirestore,
+  memoryLocalCache,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   type Firestore,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
@@ -16,13 +19,28 @@ function createFirestoreClient(): Firestore {
     return initializeFirestore(
       app,
       {
-        experimentalAutoDetectLongPolling: true,
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
+        experimentalForceLongPolling: true,
         ignoreUndefinedProperties: true,
       },
       firebaseConfig.firestoreDatabaseId
     );
   } catch {
-    return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+    try {
+      return initializeFirestore(
+        app,
+        {
+          localCache: memoryLocalCache(),
+          experimentalForceLongPolling: true,
+          ignoreUndefinedProperties: true,
+        },
+        firebaseConfig.firestoreDatabaseId
+      );
+    } catch {
+      return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+    }
   }
 }
 
@@ -55,6 +73,28 @@ export interface FirestoreErrorInfo {
       email?: string | null;
     }[];
   };
+}
+
+export function isFirestoreOfflineError(error: unknown): boolean {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code || '').toLowerCase()
+      : '';
+  if (code === 'unavailable') return true;
+
+  let message = error instanceof Error ? error.message : String(error ?? '');
+  try {
+    const parsed = JSON.parse(message) as { error?: string };
+    if (typeof parsed?.error === 'string') {
+      message = parsed.error;
+    }
+  } catch {
+    // Not JSON
+  }
+
+  return /client is offline|could not reach cloud firestore backend|offline|unavailable|network error|failed to get document from server/i.test(
+    message
+  );
 }
 
 export function handleFirestoreError(

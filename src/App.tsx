@@ -17,7 +17,7 @@ import {
 import { AccountSettingsModal } from './components/InfoAndTurboModal';
 import { ProfileModal } from './components/ProfileModal';
 import { DEFAULT_SHOW_BIBLE, SEED_CHARACTERS, SEED_PROJECTS } from './data/seedData';
-import { auth } from './firebase';
+import { auth, isFirestoreOfflineError } from './firebase';
 import {
   deleteCloudCharacter,
   deleteCloudCreation,
@@ -150,56 +150,65 @@ export default function App() {
     return () => unsub();
   }, []);
 
+  const handleCloudSyncError = useCallback((err: unknown) => {
+    if (isFirestoreOfflineError(err)) {
+      setNotice({
+        type: 'error',
+        text: 'Cloud sync is temporarily offline. Changes stay available locally and will sync when reconnected.',
+      });
+      return;
+    }
+    setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
+  }, []);
+
   // Immediate Cloud Sync: attach private Firestore listeners as soon as user is signed in
   useEffect(() => {
     if (!authReady || !authUser) return;
 
     let cancelled = false;
-    let unsubCloud: (() => void) | null = null;
-
-    void (async () => {
-      try {
-        const profile = await ensureUserWorkspaceProfile(authUser);
+    const unsubCloud = subscribeToCloudWorkspace(authUser.uid, {
+      onProjects: (cloudProjects) => {
         if (cancelled) return;
-        setCloudDisplayName(profile.displayName);
-
-        unsubCloud = subscribeToCloudWorkspace(authUser.uid, {
-          onProjects: (cloudProjects) => {
-            if (cancelled) return;
-            if (cloudProjects.length > 0) {
-              setProjects(cloudProjects);
-              setActiveProjectId((curr) =>
-                cloudProjects.some((p) => p.id === curr) ? curr : cloudProjects[0].id
-              );
-            }
-          },
-          onCharacters: (cloudChars) => {
-            if (cancelled) return;
-            if (cloudChars.length > 0) {
-              setCharacters(cloudChars);
-            }
-          },
-          onCreations: (cloudCreations) => {
-            if (cancelled) return;
-            setCreations(cloudCreations);
-          },
-          onShowBible: (cloudBible) => {
-            if (cancelled || !cloudBible) return;
-            setShowBible(cloudBible);
-          },
-        });
-      } catch (err) {
-        if (!cancelled) {
-          setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
+        if (cloudProjects.length > 0) {
+          setProjects(cloudProjects);
+          setActiveProjectId((curr) =>
+            cloudProjects.some((p) => p.id === curr) ? curr : cloudProjects[0].id
+          );
         }
-      }
-    })();
+      },
+      onCharacters: (cloudChars) => {
+        if (cancelled) return;
+        if (cloudChars.length > 0) {
+          setCharacters(cloudChars);
+        }
+      },
+      onCreations: (cloudCreations) => {
+        if (cancelled) return;
+        setCreations(cloudCreations);
+      },
+      onShowBible: (cloudBible) => {
+        if (cancelled || !cloudBible) return;
+        setShowBible(cloudBible);
+      },
+    });
+
+    void ensureUserWorkspaceProfile(authUser)
+      .then((profile) => {
+        if (!cancelled) {
+          setCloudDisplayName(profile.displayName);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          handleCloudSyncError(err);
+        }
+      });
 
     return () => {
       cancelled = true;
-      unsubCloud?.();
+      unsubCloud();
     };
-  }, [authReady, authUser]);
+  }, [authReady, authUser, handleCloudSyncError]);
 
   const handleUpdatePreferences = (next: StudioPreferences) => {
     setStudioPrefs(next);
@@ -218,7 +227,7 @@ export default function App() {
     setProjects((prev) => prev.map((p) => (p.id === stamped.id ? stamped : p)));
     if (authUser) {
       void saveCloudProject(authUser.uid, stamped, true).catch((err) => {
-        setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
+        handleCloudSyncError(err);
       });
     }
   };
@@ -228,7 +237,7 @@ export default function App() {
     handleSelectActiveProject(newProj.id);
     if (authUser) {
       void saveCloudProject(authUser.uid, newProj, false).catch((err) => {
-        setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
+        handleCloudSyncError(err);
       });
     }
   };
@@ -242,7 +251,7 @@ export default function App() {
     }
     if (authUser) {
       void deleteCloudProject(authUser.uid, projectId).catch((err) => {
-        setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
+        handleCloudSyncError(err);
       });
     }
   };
@@ -251,7 +260,7 @@ export default function App() {
     setCharacters((prev) => [char, ...prev]);
     if (authUser) {
       void saveCloudCharacter(authUser.uid, char, false).catch((err) => {
-        setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
+        handleCloudSyncError(err);
       });
     }
   };
@@ -260,7 +269,7 @@ export default function App() {
     setCharacters((prev) => prev.map((c) => (c.id === updatedChar.id ? updatedChar : c)));
     if (authUser) {
       void saveCloudCharacter(authUser.uid, updatedChar, true).catch((err) => {
-        setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
+        handleCloudSyncError(err);
       });
     }
   };
@@ -270,7 +279,7 @@ export default function App() {
     setShowBible(stamped);
     if (authUser) {
       void saveCloudShowBible(authUser.uid, stamped).catch((err) => {
-        setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
+        handleCloudSyncError(err);
       });
     }
   };
@@ -279,7 +288,7 @@ export default function App() {
     setCharacters((prev) => prev.filter((c) => c.id !== charId));
     if (authUser) {
       void deleteCloudCharacter(authUser.uid, charId).catch((err) => {
-        setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
+        handleCloudSyncError(err);
       });
     }
   };
@@ -288,7 +297,7 @@ export default function App() {
     setCreations((prev) => [creation, ...prev]);
     if (authUser) {
       void saveCloudCreation(authUser.uid, creation).catch((err) => {
-        setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
+        handleCloudSyncError(err);
       });
     }
   };
@@ -297,7 +306,7 @@ export default function App() {
     setCreations((prev) => prev.filter((c) => c.id !== creationId));
     if (authUser) {
       void deleteCloudCreation(authUser.uid, creationId).catch((err) => {
-        setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
+        handleCloudSyncError(err);
       });
     }
   };
@@ -399,7 +408,7 @@ export default function App() {
       );
       if (authUser) {
         void saveCloudProject(authUser.uid, imported, existsLocally).catch((err) => {
-          setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
+          handleCloudSyncError(err);
         });
       }
 
@@ -411,7 +420,7 @@ export default function App() {
           for (const char of additions) {
             if (authUser) {
               void saveCloudCharacter(authUser.uid, char, false).catch((err) => {
-                setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
+                handleCloudSyncError(err);
               });
             }
           }

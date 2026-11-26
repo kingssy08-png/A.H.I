@@ -1,4 +1,4 @@
-import { Client } from '@gradio/client';
+import { Client, handle_file } from '@gradio/client';
 import { getActiveColabUrl } from '../utils/turboGpuConfig';
 import type {
   AnimationStyle,
@@ -744,7 +744,7 @@ async function consumeSseVideoStream(
 
   if (!res.ok || !res.body) {
     const errMsg = await extractErrorMessage(res, `Generation request failed (${res.status})`);
-    throw new Error(errMsg);
+    throw new HttpApiError(res.status, errMsg);
   }
 
   const reader = res.body.getReader();
@@ -800,7 +800,402 @@ async function consumeSseVideoStream(
   return finalResult;
 }
 
-export function generateHfVideoClip(
+const HF_BROWSER_VIDEO_T2V_SPACES = [
+  'Lightricks/ltx-video-distilled',
+  'DeepRat/LTX-Video-ZeroGPU-Optimized',
+  'zai-org/CogVideoX-5B-Space',
+  'zai-org/CogVideoX-2B-Space',
+];
+
+const HF_BROWSER_VIDEO_I2V_SPACES = [
+  'JCisHERE/wan2-2-i2v-v3',
+  'linoyts/wan2-2-i2v-rCM',
+  'zerogpu-aoti/wan2-2-fp8da-aoti-faster',
+  'r3gm/wan2-2-fp8da-aoti-preview',
+  'r3gm/wan2-2-fp8da-aoti-preview2',
+  'multimodalart/wan2-1-fast',
+  'ysharma/wan2-1-fast',
+  'Lightricks/ltx-video-distilled',
+  'zai-org/CogVideoX-5B-Space',
+];
+
+function dataUrlOrRemoteToBlob(dataUrl: string): Promise<Blob> {
+  return fetch(dataUrl).then((r) => {
+    if (!r.ok) throw new Error('Could not read starting frame image.');
+    return r.blob();
+  });
+}
+
+function extractBrowserGradioVideoUrl(payload: unknown): string | null {
+  if (!payload) return null;
+  if (typeof payload === 'string') {
+    if (payload.startsWith('https://') || payload.startsWith('data:video/')) {
+      return payload;
+    }
+    return null;
+  }
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const found = extractBrowserGradioVideoUrl(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof payload === 'object') {
+    const rec = payload as Record<string, unknown>;
+    if (typeof rec.url === 'string' && (rec.url.startsWith('https://') || rec.url.startsWith('data:video/'))) {
+      return rec.url;
+    }
+    if (rec.video) {
+      const v = extractBrowserGradioVideoUrl(rec.video);
+      if (v) return v;
+    }
+    for (const val of Object.values(rec)) {
+      const found = extractBrowserGradioVideoUrl(val);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+async function discoverBrowserRunningVideoSpaces(
+  mode: 'text-to-video' | 'image-to-video'
+): Promise<string[]> {
+  const curated =
+    mode === 'image-to-video'
+      ? HF_BROWSER_VIDEO_I2V_SPACES
+      : Array.from(new Set([...HF_BROWSER_VIDEO_T2V_SPACES, ...HF_BROWSER_VIDEO_I2V_SPACES]));
+  const terms = ['wan2-2-i2v', 'wan2-2', 'wan2-1', 'ltx-video', 'cogvideox'];
+  const discovered = new Map<string, { id: string; likes: number; hasGpu: boolean; rank: number }>();
+
+  try {
+    const results = await Promise.allSettled(
+      terms.map(async (term) => {
+        const res = await withBrowserTimeout(
+          fetch(
+            `https://huggingface.co/api/spaces?search=${encodeURIComponent(
+              term
+            )}&sort=likes&direction=-1&limit=12&expand[]=runtime&expand[]=sdk&expand[]=likes`
+          ),
+          5000,
+          'Hub lookup timed out'
+        );
+        if (!res.ok) return [];
+        const arr = (await res.json()) as unknown;
+        return Array.isArray(arr) ? arr : [];
+      })
+    );
+
+    for (const r of results) {
+      if (r.status !== 'fulfilled') continue;
+      for (const raw of r.value) {
+        const item = raw as {
+          id?: string;
+          sdk?: string;
+          likes?: number;
+          runtime?: { stage?: string; hardware?: { current?: string | null } };
+        };
+        const id = String(item.id ?? '');
+        if (!id || item.sdk !== 'gradio' || item.runtime?.stage !== 'RUNNING') continue;
+        if (/upscaler|lora|trainer|extract|caption|demo-blank|bench|dataset|first-last-frame|mochi-1-preview/i.test(id)) {
+          continue;
+        }
+        const rank = curated.indexOf(id);
+        const hasGpu = Boolean(item.runtime?.hardware?.current);
+        const likes = typeof item.likes === 'number' ? item.likes : 0;
+        const prev = discovered.get(id);
+        if (!prev || likes > prev.likes) {
+          discovered.set(id, { id, likes, hasGpu, rank: rank === -1 ? 999 : rank });
+        }
+      }
+    }
+
+    const sorted = Array.from(discovered.values())
+      .sort((a, b) => {
+        if (a.hasGpu !== b.hasGpu) return a.hasGpu ? -1 : 1;
+        if (a.rank !== b.rank) return a.rank - b.rank;
+        return b.likes - a.likes;
+      })
+      .map((x) => x.id)
+      .slice(0, 10);
+
+    return sorted.length > 0 ? sorted : curated;
+  } catch {
+    return curated;
+  }
+}
+
+async function generateHfVideoBrowserFallback(
+  payload: {
+    prompt: string;
+    mode: 'text-to-video' | 'image-to-video';
+    imageDataUrl?: string;
+    referenceImages?: Array<Pick<VideoReferenceItem, 'imageUrl' | 'role' | 'label' | 'description'>>;
+    style: AnimationStyle;
+    aspectRatio?: AspectRatio;
+    cameraMotion?: CameraMotion;
+    spaceId?: string;
+    colabUrl?: string;
+  },
+  onProgress: (event: HfVideoProgressEvent) => void
+): Promise<{
+  videoUrl: string;
+  imageDataUrl?: string;
+  spaceUsed: string;
+  nodeLabel: string;
+  provider?: 'cloudflare' | 'colab-turbo' | 'huggingface';
+  elapsedMs?: number;
+  translatedPrompt?: string;
+  mode: 'text-to-video' | 'image-to-video' | 'lipsync';
+}> {
+  const started = Date.now();
+  const isWarmStorybook = payload.style === 'Warm Storybook 3D';
+  const styleCue = CLIENT_STYLE_CUES[payload.style] ?? `${payload.style} aesthetic`;
+  const motionCue =
+    payload.cameraMotion && payload.cameraMotion !== 'Auto' && payload.cameraMotion !== 'Static'
+      ? ` Camera motion: ${payload.cameraMotion.toLowerCase()}.`
+      : '';
+  const fullPrompt = isWarmStorybook
+    ? `${payload.prompt.trim().slice(0, 520)}. ${WARM_STORYBOOK_3D_FRAMING}.${motionCue} ${WARM_STORYBOOK_3D_MODIFIERS}`
+    : `${payload.prompt.trim().slice(0, 740)}. Style: ${styleCue}.${motionCue} Coherent natural motion, clean watermark-free frame.`;
+
+  const initialImageUrl =
+    payload.imageDataUrl || payload.referenceImages?.[0]?.imageUrl || undefined;
+  let activeImageBlob: Blob | null = initialImageUrl
+    ? await dataUrlOrRemoteToBlob(initialImageUrl).catch(() => null)
+    : null;
+  let autoGeneratedStartFrameUrl: string | undefined;
+
+  const liveSpaces = await discoverBrowserRunningVideoSpaces(
+    activeImageBlob ? 'image-to-video' : payload.mode
+  );
+  const customSpace =
+    typeof payload.spaceId === 'string' && /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(payload.spaceId.trim())
+      ? payload.spaceId.trim()
+      : null;
+  const candidates = customSpace
+    ? [customSpace, ...liveSpaces.filter((s) => s !== customSpace)]
+    : liveSpaces;
+
+  let lastError = 'Live Hugging Face video Spaces are currently queued.';
+
+  const ensureStartFrame = async (targetSpace: string): Promise<Blob> => {
+    if (activeImageBlob) return activeImageBlob;
+    onProgress({
+      type: 'status',
+      progress: 24,
+      translatedPrompt: fullPrompt,
+      message: `Awake GPU Space (${targetSpace}) uses Image-to-Video — generating a fast starting frame first...`,
+    });
+    const generated = await generateHfImage(
+      {
+        prompt: payload.prompt,
+        style: payload.style,
+        aspectRatio: payload.aspectRatio ?? '16:9',
+        engine: 'flux-schnell',
+        colabUrl: payload.colabUrl,
+      },
+      onProgress
+    );
+    const blob = await dataUrlOrRemoteToBlob(generated.imageDataUrl);
+    activeImageBlob = blob;
+    autoGeneratedStartFrameUrl = generated.imageDataUrl;
+    onProgress({
+      type: 'status',
+      progress: 34,
+      imageDataUrl: generated.imageDataUrl,
+      translatedPrompt: fullPrompt,
+      message: `Starting frame ready — feeding straight into ${targetSpace}...`,
+    });
+    return blob;
+  };
+
+  for (let i = 0; i < candidates.length; i++) {
+    const spaceId = candidates[i];
+    const nodeLabel = `Hugging Face Browser Direct (${spaceId})`;
+    onProgress({
+      type: 'status',
+      space: spaceId,
+      nodeLabel,
+      provider: 'huggingface',
+      attempt: i + 1,
+      totalAttempts: candidates.length,
+      progress: Math.min(45, 20 + i * 5),
+      translatedPrompt: fullPrompt,
+      message: `Connecting directly in browser to ${spaceId}...`,
+    });
+
+    try {
+      const client = await withBrowserTimeout(
+        Client.connect(spaceId),
+        18000,
+        `${spaceId} connection timed out.`
+      );
+      const api = await withBrowserTimeout(
+        client.view_api(),
+        12000,
+        `${spaceId} API inspection timed out.`
+      );
+
+      const namedEntries = Object.entries(api.named_endpoints ?? {});
+      const videoEndpoints = namedEntries.filter(([, ep]) =>
+        (ep?.returns ?? []).some((r) => /video/i.test(String(r.component)))
+      );
+      const candidateEntries = videoEndpoints.length > 0 ? videoEndpoints : namedEntries;
+      const isCogVideoSpace = /cogvideo/i.test(spaceId);
+      const isExplicitI2vSpace =
+        /wan2[-_.]?[12]|i2v|img2vid|image-to-video/i.test(spaceId) &&
+        !/t2v|text-to-video/i.test(spaceId);
+
+      const pickEndpoint = (hasFrame: boolean): string | number => {
+        if (hasFrame) {
+          const m = candidateEntries.find(([k]) => /i2v|img2vid|image_to_video|image/i.test(k));
+          if (m) return m[0];
+        } else {
+          const m = candidateEntries.find(([k]) =>
+            /t2v|txt2vid|text_to_video|text|generate|predict|infer/i.test(k)
+          );
+          if (m) return m[0];
+        }
+        return candidateEntries[0]?.[0] ?? 0;
+      };
+
+      let endpoint = pickEndpoint(Boolean(activeImageBlob));
+      let epInfo =
+        typeof endpoint === 'string'
+          ? api.named_endpoints?.[endpoint]
+          : api.unnamed_endpoints?.[0];
+      let paramsMeta = epInfo?.parameters ?? [];
+
+      const requiresMandatoryImage =
+        !isCogVideoSpace &&
+        paramsMeta.some(
+          (p) =>
+            (p.component === 'Image' ||
+              (p.parameter_name?.toLowerCase().includes('image') &&
+                !p.parameter_name?.toLowerCase().includes('last') &&
+                !p.parameter_name?.toLowerCase().includes('end'))) &&
+            !p.parameter_has_default
+        );
+      const endpointIsI2v = /i2v|img2vid|image_to_video/i.test(String(endpoint));
+
+      if (!activeImageBlob && (requiresMandatoryImage || isExplicitI2vSpace || endpointIsI2v)) {
+        await ensureStartFrame(spaceId);
+        endpoint = pickEndpoint(true);
+        epInfo =
+          typeof endpoint === 'string'
+            ? api.named_endpoints?.[endpoint]
+            : api.unnamed_endpoints?.[0];
+        paramsMeta = epInfo?.parameters ?? [];
+      }
+
+      const gradioPayload: Record<string, unknown> = {};
+      let attachedImage = false;
+      const isDistilled = /ltx|fast|turbo|fp8/i.test(spaceId);
+      for (const p of paramsMeta) {
+        const name = p.parameter_name;
+        if (!name) continue;
+        const lower = name.toLowerCase();
+        if (lower.includes('prompt') && !lower.includes('negative')) {
+          gradioPayload[name] = fullPrompt;
+        } else if (lower.includes('negative')) {
+          gradioPayload[name] = isWarmStorybook
+            ? WARM_STORYBOOK_3D_NEGATIVE_PROMPT
+            : p.parameter_has_default
+            ? p.parameter_default
+            : 'text, watermark, signature, blurry, low quality, artifacts';
+        } else if (lower === 'mode') {
+          gradioPayload[name] = activeImageBlob ? 'image-to-video' : 'text-to-video';
+        } else if (
+          activeImageBlob &&
+          !attachedImage &&
+          !lower.includes('last') &&
+          !lower.includes('end') &&
+          (p.component === 'Image' || (lower.includes('image') && p.component !== 'Textbox'))
+        ) {
+          gradioPayload[name] = handle_file(activeImageBlob);
+          attachedImage = true;
+        } else if (
+          (lower === 'num_inference_steps' || lower === 'steps') &&
+          isDistilled &&
+          !p.parameter_has_default
+        ) {
+          gradioPayload[name] = 8;
+        } else if (p.parameter_has_default) {
+          gradioPayload[name] = p.parameter_default;
+        }
+      }
+
+      const job = client.submit(
+        endpoint,
+        Object.keys(gradioPayload).length > 0 ? gradioPayload : [fullPrompt]
+      );
+
+      let videoUrl: string | null = null;
+      const jobStart = Date.now();
+      for await (const msg of job) {
+        if (Date.now() - jobStart > 120_000 && !videoUrl) {
+          lastError = `${spaceId} queue wait exceeded 120s limit.`;
+          break;
+        }
+        if (msg.type === 'status') {
+          const queueInfo =
+            typeof msg.position === 'number' ? `Queue #${msg.position + 1}` : msg.stage;
+          const etaInfo =
+            typeof msg.eta === 'number' && msg.eta > 0 ? ` · Est. ${Math.round(msg.eta)}s` : '';
+          onProgress({
+            type: 'status',
+            space: spaceId,
+            nodeLabel,
+            provider: 'huggingface',
+            attempt: i + 1,
+            totalAttempts: candidates.length,
+            progress: msg.stage === 'generating' ? 72 : 52,
+            queuePosition: msg.position,
+            eta: msg.eta,
+            translatedPrompt: fullPrompt,
+            message: `Connected to ${spaceId} · ${queueInfo}${etaInfo}`,
+          });
+          if (msg.stage === 'error') {
+            lastError =
+              typeof msg.message === 'string' ? msg.message : `${spaceId} reported an error.`;
+            break;
+          }
+        } else if (msg.type === 'data') {
+          videoUrl = extractBrowserGradioVideoUrl(msg.data);
+          if (videoUrl) break;
+        }
+      }
+
+      if (!videoUrl) continue;
+
+      const finalResult = {
+        videoUrl,
+        ...(autoGeneratedStartFrameUrl ? { imageDataUrl: autoGeneratedStartFrameUrl } : {}),
+        spaceUsed: spaceId,
+        nodeLabel,
+        provider: 'huggingface' as const,
+        elapsedMs: Date.now() - started,
+        translatedPrompt: fullPrompt,
+        mode: (activeImageBlob ? 'image-to-video' : 'text-to-video') as
+          | 'text-to-video'
+          | 'image-to-video',
+      };
+      onProgress({
+        type: 'complete',
+        ...finalResult,
+        progress: 100,
+      });
+      return finalResult;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  throw new Error(lastError);
+}
+
+export async function generateHfVideoClip(
   payload: {
     prompt: string;
     mode: 'text-to-video' | 'image-to-video';
@@ -815,15 +1210,26 @@ export function generateHfVideoClip(
   },
   onProgress: (event: HfVideoProgressEvent) => void
 ) {
-  return consumeSseVideoStream(
-    '/api/generate-video',
-    {
-      ...payload,
-      action: 'video',
-      colabUrl: payload.colabUrl ?? getActiveColabUrl(),
-    },
-    onProgress
-  );
+  if (payload.prompt.trim().length < 4) {
+    throw new HttpApiError(400, 'Please provide a scene visual prompt (at least 4 characters).');
+  }
+
+  try {
+    return await consumeSseVideoStream(
+      '/api/generate-video',
+      {
+        ...payload,
+        action: 'video',
+        colabUrl: payload.colabUrl ?? getActiveColabUrl(),
+      },
+      onProgress
+    );
+  } catch (err) {
+    if (err instanceof HttpApiError && err.status === 400) {
+      throw err;
+    }
+    return await generateHfVideoBrowserFallback(payload, onProgress);
+  }
 }
 
 export function generateHfLipSyncClip(

@@ -61,16 +61,22 @@ const SDXL_SPACES = [
 ];
 const VIDEO_SPACES_T2V = [
   'Lightricks/ltx-video-distilled',
+  'DeepRat/LTX-Video-ZeroGPU-Optimized',
   'alexnasa/ltx-2-TURBO',
   'zai-org/CogVideoX-5B-Space',
+  'zai-org/CogVideoX-2B-Space',
 ];
 const VIDEO_SPACES_I2V = [
+  'JCisHERE/wan2-2-i2v-v3',
+  'linoyts/wan2-2-i2v-rCM',
+  'zerogpu-aoti/wan2-2-fp8da-aoti-faster',
+  'r3gm/wan2-2-fp8da-aoti-preview',
+  'r3gm/wan2-2-fp8da-aoti-preview2',
   'multimodalart/wan2-1-fast',
   'ysharma/wan2-1-fast',
   'Lightricks/ltx-video-distilled',
-  'zerogpu-aoti/wan2-2-fp8da-aoti-faster',
-  'r3gm/wan2-2-fp8da-aoti-preview',
   'zai-org/CogVideoX-5B-Space',
+  'zai-org/CogVideoX-2B-Space',
 ];
 const LIPSYNC_SPACES = [
   'KwaiVGI/LivePortrait',
@@ -88,12 +94,17 @@ const SPACE_NODE_LABELS: Record<string, string> = {
   'prodia/fast-stable-diffusion': 'Prodia Fast SD HF Node',
   'stabilityai/stable-diffusion-xl-base-1.0': 'SDXL Base HF Node',
   'Lightricks/ltx-video-distilled': 'LTX-Video Distilled (Fast 10–25s)',
-  'multimodalart/wan2-1-fast': 'Wan 2.1 Fast Turbo (4-Step)',
-  'ysharma/wan2-1-fast': 'Wan 2.1 Fast I2V (4-Step)',
+  'DeepRat/LTX-Video-ZeroGPU-Optimized': 'LTX-Video ZeroGPU Optimized',
   'alexnasa/ltx-2-TURBO': 'LTX-2 Turbo Fast Node',
+  'JCisHERE/wan2-2-i2v-v3': 'Wan 2.2 I2V v3 ZeroGPU Node',
+  'linoyts/wan2-2-i2v-rCM': 'Wan 2.2 I2V rCM Fast Node',
   'zerogpu-aoti/wan2-2-fp8da-aoti-faster': 'Wan 2.2 Fast ZeroGPU Node',
   'r3gm/wan2-2-fp8da-aoti-preview': 'Wan 2.2 Preview ZeroGPU Node',
-  'zai-org/CogVideoX-5B-Space': 'CogVideoX-5B Community Node',
+  'r3gm/wan2-2-fp8da-aoti-preview2': 'Wan 2.2 Preview-2 ZeroGPU Node',
+  'multimodalart/wan2-1-fast': 'Wan 2.1 Fast Turbo (4-Step)',
+  'ysharma/wan2-1-fast': 'Wan 2.1 Fast I2V (4-Step)',
+  'zai-org/CogVideoX-5B-Space': 'CogVideoX-5B ZeroGPU Node',
+  'zai-org/CogVideoX-2B-Space': 'CogVideoX-2B ZeroGPU Node',
   'KwaiVGI/LivePortrait': 'LivePortrait Expression Node',
   'vinthony/SadTalker': 'SadTalker Talking-Head Node',
   'fffiloni/SadTalker': 'SadTalker Mirror Node',
@@ -416,7 +427,9 @@ function isEligibleRunningVideoSpace(item: HfHubSpaceSummary): boolean {
   if (id === 'genmo/mochi-1-preview') return false;
   if (item.sdk !== 'gradio') return false;
   if (item.runtime?.stage !== 'RUNNING') return false;
-  if (/upscaler|lora|trainer|extract|caption|demo-blank|bench|dataset/i.test(id)) return false;
+  if (/upscaler|lora|trainer|extract|caption|demo-blank|bench|dataset|first-last-frame/i.test(id)) {
+    return false;
+  }
   return true;
 }
 
@@ -429,15 +442,21 @@ async function discoverRunningVideoSpaces(
     return cached.spaces;
   }
 
-  const curatedPriority = mode === 'image-to-video' ? VIDEO_SPACES_I2V : VIDEO_SPACES_T2V;
+  // Always check all curated T2V + I2V Spaces across Wan2.1, Wan2.2, LTX-Video, and CogVideoX
+  // so Text-to-Video can seamlessly promote to auto-frame + I2V if T2V nodes are busy or down.
+  const curatedPriority =
+    mode === 'image-to-video'
+      ? VIDEO_SPACES_I2V
+      : Array.from(new Set([...VIDEO_SPACES_T2V, ...VIDEO_SPACES_I2V]));
+
   const searchTerms =
     mode === 'image-to-video'
-      ? ['wan2-1', 'wan2-2', 'ltx-video', 'image-to-video']
-      : ['ltx-video', 'cogvideo', 'text-to-video', 'wan2'];
+      ? ['wan2-2-i2v', 'wan2-2', 'wan2-1', 'ltx-video', 'cogvideox']
+      : ['ltx-video', 'cogvideox', 'wan2-2-i2v', 'wan2-2', 'wan2-1'];
 
   try {
     const [searchResults, curatedStatuses] = await Promise.all([
-      Promise.allSettled(searchTerms.map((term) => queryHfHubSpaces(term, 12))),
+      Promise.allSettled(searchTerms.map((term) => queryHfHubSpaces(term, 15))),
       Promise.allSettled(curatedPriority.map((id) => fetchSingleHfSpaceStatus(id))),
     ]);
 
@@ -473,12 +492,12 @@ async function discoverRunningVideoSpaces(
 
     const ranked = Array.from(discoveredMap.values())
       .sort((a, b) => {
-        if (a.curatedRank !== b.curatedRank) return a.curatedRank - b.curatedRank;
         if (a.hasGpu !== b.hasGpu) return a.hasGpu ? -1 : 1;
+        if (a.curatedRank !== b.curatedRank) return a.curatedRank - b.curatedRank;
         return b.likes - a.likes;
       })
       .map((entry) => entry.id)
-      .slice(0, 8);
+      .slice(0, 12);
 
     const finalSpaces = ranked.length > 0 ? ranked : curatedPriority;
     liveSpaceDiscoveryCache.set(mode, { spaces: finalSpaces, expiresAt: now + 90_000 });
@@ -1579,6 +1598,7 @@ async function runResilientImageGeneration(
     engine: string;
     spaceId?: string;
     colabUrl?: string;
+    allowGradioFallback?: boolean;
   },
   onStatus?: (evt: {
     space: string;
@@ -1605,18 +1625,20 @@ async function runResilientImageGeneration(
       ? options.spaceId.trim()
       : null;
 
-  // On Vercel, skip slow public Gradio discovery/queues unless user explicitly asked for a spaceId;
-  // browser fallback connects directly over WebSockets via @gradio/client if server nodes are unavailable.
-  const shouldUseGradioSpaces = !process.env.VERCEL || Boolean(customSpace);
+  // On Vercel, skip slow public Gradio discovery/queues unless user explicitly asked for a spaceId
+  // or an internal caller (like T2V->I2V start-frame fallback) explicitly enables Gradio fallback.
+  const shouldUseGradioSpaces =
+    !process.env.VERCEL || Boolean(customSpace) || Boolean(options.allowGradioFallback);
   const liveSpaces = shouldUseGradioSpaces ? await discoverRunningImageSpaces(useSdxl) : [];
   const hfCandidates = customSpace
     ? [customSpace, ...liveSpaces.filter((s) => s !== customSpace)]
     : liveSpaces;
-  const maxGradioAttempts = process.env.VERCEL
-    ? customSpace
-      ? 1
-      : 0
-    : hfCandidates.length;
+  const maxGradioAttempts =
+    process.env.VERCEL && !customSpace
+      ? options.allowGradioFallback
+        ? Math.min(2, hfCandidates.length)
+        : 0
+      : hfCandidates.length;
 
   const totalSteps = Math.max(
     1,
@@ -2821,9 +2843,10 @@ async function streamStandardVideo(
 
   const shouldUseSingleFrameI2v = Boolean(useExactStartFrame && normalizedRefs.length === 1);
   const safeMode = shouldUseSingleFrameI2v ? 'image-to-video' : 'text-to-video';
-  const imageBlob = shouldUseSingleFrameI2v
+  let activeImageBlob: Blob | null = shouldUseSingleFrameI2v
     ? new Blob([new Uint8Array(normalizedRefs[0].buffer)], { type: normalizedRefs[0].mimeType })
     : null;
+  let autoGeneratedStartFrameUrl: string | undefined;
 
   const customSpace =
     typeof spaceId === 'string' && SPACE_ID_RE.test(spaceId.trim()) ? spaceId.trim() : null;
@@ -2831,7 +2854,7 @@ async function streamStandardVideo(
   sendEvent({
     type: 'status',
     progress: 11,
-    message: 'Finding live running free GPU video Spaces...',
+    message: 'Discovering live GPU Spaces across Wan2.1, Wan2.2, LTX-Video & CogVideoX...',
   });
 
   const liveRunningSpaces = await discoverRunningVideoSpaces(safeMode);
@@ -2868,7 +2891,45 @@ async function streamStandardVideo(
   }
 
   const fullPrompt = buildTranslatedVideoPrompt(enhancedPrompt, String(style), safeRatio, safeMotion);
+  const queueTimeoutMs = process.env.VERCEL ? 52_000 : 120_000;
   let lastError = 'Live running video Spaces are currently queued.';
+
+  const ensureAutoStartingFrame = async (targetNodeLabel: string): Promise<Blob | null> => {
+    if (activeImageBlob) return activeImageBlob;
+
+    sendEvent({
+      type: 'status',
+      progress: 22,
+      translatedPrompt: fullPrompt,
+      message: `Awake GPU node (${targetNodeLabel}) requires Image-to-Video — generating a fast starting frame first...`,
+    });
+
+    const startImg = await runResilientImageGeneration({
+      prompt: enhancedPrompt,
+      style: String(style),
+      aspectRatio: safeRatio,
+      engine: 'flux-schnell',
+      colabUrl: typeof colabUrl === 'string' ? colabUrl : undefined,
+      allowGradioFallback: true,
+    });
+
+    const resolvedBlob = resolveImageInputToBlob(startImg.imageDataUrl);
+    if (!resolvedBlob) {
+      throw new Error('Could not convert generated starting frame into an image blob.');
+    }
+    activeImageBlob = resolvedBlob;
+    autoGeneratedStartFrameUrl = startImg.imageDataUrl;
+
+    sendEvent({
+      type: 'status',
+      progress: 30,
+      imageDataUrl: startImg.imageDataUrl,
+      translatedPrompt: fullPrompt,
+      message: `Starting frame ready via ${startImg.nodeLabel} — feeding directly into ${targetNodeLabel}...`,
+    });
+
+    return activeImageBlob;
+  };
 
   for (let i = 0; i < nodesToTry.length; i++) {
     const node = nodesToTry[i];
@@ -2894,12 +2955,12 @@ async function streamStandardVideo(
       const clientOptions = node.provider === 'huggingface' ? getHfGradioOptions() : undefined;
       const client = await withTimeout(
         Client.connect(node.target, clientOptions),
-        12000,
+        18000,
         `${node.nodeLabel} connection timed out.`
       );
       const api = await withTimeout(
         client.view_api(),
-        8000,
+        12000,
         `${node.nodeLabel} API schema timed out.`
       );
 
@@ -2909,33 +2970,58 @@ async function streamStandardVideo(
       );
       const candidateEntries = videoEndpoints.length > 0 ? videoEndpoints : namedEntries;
 
-      let chosenEndpoint: string | number = candidateEntries[0]?.[0] ?? 0;
-      if (safeMode === 'image-to-video') {
-        const i2vMatch = candidateEntries.find(([k]) => /i2v|img2vid|image/i.test(k));
-        if (i2vMatch) chosenEndpoint = i2vMatch[0];
-      } else {
-        const t2vMatch = candidateEntries.find(([k]) =>
-          /t2v|txt2vid|text_to_video|text|generate|predict|infer/i.test(k)
-        );
-        if (t2vMatch) chosenEndpoint = t2vMatch[0];
-      }
+      const isCogVideoSpace = /cogvideo/i.test(node.target);
+      const isExplicitI2vSpace =
+        /wan2[-_.]?[12]|i2v|img2vid|image-to-video/i.test(node.target) &&
+        !/t2v|text-to-video/i.test(node.target);
 
-      const epInfo =
+      const pickEndpointForCurrentFrame = (hasFrame: boolean): string | number => {
+        if (hasFrame) {
+          const i2vMatch = candidateEntries.find(([k]) => /i2v|img2vid|image_to_video|image/i.test(k));
+          if (i2vMatch) return i2vMatch[0];
+        } else {
+          const t2vMatch = candidateEntries.find(([k]) =>
+            /t2v|txt2vid|text_to_video|text|generate|predict|infer/i.test(k)
+          );
+          if (t2vMatch) return t2vMatch[0];
+        }
+        return candidateEntries[0]?.[0] ?? 0;
+      };
+
+      let chosenEndpoint: string | number = pickEndpointForCurrentFrame(Boolean(activeImageBlob));
+      let epInfo =
         typeof chosenEndpoint === 'string'
           ? api.named_endpoints?.[chosenEndpoint]
           : api.unnamed_endpoints?.[0];
-      const paramsMeta = epInfo?.parameters ?? [];
+      let paramsMeta = epInfo?.parameters ?? [];
 
-      const requiresMandatoryImage = paramsMeta.some(
-        (p) =>
-          (p.component === 'Image' ||
-            (p.parameter_name?.toLowerCase().includes('image') &&
-              !p.parameter_name?.toLowerCase().includes('last'))) &&
-          !p.parameter_has_default
-      );
-      if (!imageBlob && requiresMandatoryImage) {
-        lastError = `${node.nodeLabel} requires a starting image frame`;
-        continue;
+      const requiresMandatoryImage =
+        !isCogVideoSpace &&
+        paramsMeta.some(
+          (p) =>
+            (p.component === 'Image' ||
+              (p.parameter_name?.toLowerCase().includes('image') &&
+                !p.parameter_name?.toLowerCase().includes('last') &&
+                !p.parameter_name?.toLowerCase().includes('end'))) &&
+            !p.parameter_has_default
+        );
+
+      const endpointIsI2v = /i2v|img2vid|image_to_video/i.test(String(chosenEndpoint));
+
+      if (!activeImageBlob && (requiresMandatoryImage || isExplicitI2vSpace || endpointIsI2v)) {
+        try {
+          await ensureAutoStartingFrame(node.nodeLabel);
+          chosenEndpoint = pickEndpointForCurrentFrame(Boolean(activeImageBlob));
+          epInfo =
+            typeof chosenEndpoint === 'string'
+              ? api.named_endpoints?.[chosenEndpoint]
+              : api.unnamed_endpoints?.[0];
+          paramsMeta = epInfo?.parameters ?? [];
+        } catch (imgErr) {
+          const msg = imgErr instanceof Error ? imgErr.message : String(imgErr);
+          lastError = `${node.nodeLabel} requires a starting image (${msg})`;
+          continue;
+        }
       }
 
       const isDistilled = /ltx|fast|turbo|fp8/i.test(node.target);
@@ -2954,14 +3040,16 @@ async function streamStandardVideo(
             : p.parameter_has_default
             ? p.parameter_default
             : 'text, watermark, signature, blurry, low quality, artifacts';
+        } else if (lower === 'mode') {
+          payload[name] = activeImageBlob ? 'image-to-video' : 'text-to-video';
         } else if (
-          imageBlob &&
+          activeImageBlob &&
           !attachedPrimary &&
           !lower.includes('last') &&
           !lower.includes('end') &&
-          (lower.includes('image') || p.component === 'Image')
+          (p.component === 'Image' || (lower.includes('image') && p.component !== 'Textbox'))
         ) {
-          payload[name] = handle_file(imageBlob);
+          payload[name] = handle_file(activeImageBlob);
           attachedPrimary = true;
         } else if (
           (lower === 'num_inference_steps' || lower === 'steps') &&
@@ -2976,6 +3064,10 @@ async function streamStandardVideo(
         }
       }
 
+      const effectiveMode: 'text-to-video' | 'image-to-video' = activeImageBlob
+        ? 'image-to-video'
+        : 'text-to-video';
+
       sendEvent({
         type: 'status',
         space: node.displaySpace,
@@ -2985,10 +3077,13 @@ async function streamStandardVideo(
         totalAttempts: nodesToTry.length,
         progress: 34,
         translatedPrompt: fullPrompt,
+        ...(autoGeneratedStartFrameUrl ? { imageDataUrl: autoGeneratedStartFrameUrl } : {}),
         message:
           node.provider === 'colab-turbo'
             ? `Connected to Colab Turbo GPU · Rendering zero-queue...`
-            : `Connected to ${node.nodeLabel} · Submitting fast clip...`,
+            : autoGeneratedStartFrameUrl
+            ? `Connected to ${node.nodeLabel} · Animating starting frame...`
+            : `Connected to ${node.nodeLabel} · Submitting clip...`,
       });
 
       const job = client.submit(chosenEndpoint, Object.keys(payload).length > 0 ? payload : [fullPrompt]);
@@ -2996,8 +3091,8 @@ async function streamStandardVideo(
       let videoUrl: string | null = null;
       const jobStart = Date.now();
       for await (const msg of job) {
-        if (Date.now() - jobStart > 45000 && !videoUrl) {
-          lastError = `${node.nodeLabel} queue wait exceeded fast limit.`;
+        if (Date.now() - jobStart > queueTimeoutMs && !videoUrl) {
+          lastError = `${node.nodeLabel} queue wait exceeded ${Math.round(queueTimeoutMs / 1000)}s limit.`;
           break;
         }
         if (msg.type === 'status') {
@@ -3059,7 +3154,7 @@ async function streamStandardVideo(
         fetch(videoUrl, {
           headers: node.provider === 'huggingface' ? getHfAuthHeadersForUrl(videoUrl) : undefined,
         }),
-        20000,
+        30000,
         `Video download from ${node.nodeLabel} timed out.`
       );
       if (!vidRes.ok) {
@@ -3074,13 +3169,14 @@ async function streamStandardVideo(
       sendEvent({
         type: 'complete',
         videoUrl: finalVideoUrl,
+        ...(autoGeneratedStartFrameUrl ? { imageDataUrl: autoGeneratedStartFrameUrl } : {}),
         spaceUsed: node.displaySpace,
         nodeLabel: node.nodeLabel,
         provider: node.provider,
         elapsedMs: Date.now() - started,
         translatedPrompt: fullPrompt,
         progress: 100,
-        mode: safeMode,
+        mode: effectiveMode,
       });
       return;
     } catch (err) {
@@ -3091,7 +3187,7 @@ async function streamStandardVideo(
   sendEvent({
     type: 'error',
     error: `All live running video Spaces (${hfCandidates
-      .slice(0, 3)
+      .slice(0, 4)
       .join(', ')}) are currently queued (${lastError}). Try again shortly or connect your free Colab GPU Notebook.`,
   });
 }

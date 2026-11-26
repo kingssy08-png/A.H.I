@@ -1,5 +1,4 @@
 import { useId } from 'react';
-import { Check } from 'lucide-react';
 
 interface AhiGeometricMarkProps {
   className?: string;
@@ -304,99 +303,39 @@ interface AhiGenerationLoaderProps {
   compact?: boolean;
 }
 
-const STEP_PIPELINES: Record<GenerationLoaderMode, string[]> = {
-  image: [
-    'Refining visual prompt...',
-    'Connecting to free open-source GPU...',
-    'Rendering high-res artwork...',
-  ],
-  video: [
-    'Enhancing camera prompt...',
-    'Connecting to free open-source GPU...',
-    'Rendering frames...',
-  ],
-  talking: [
-    'Compositing character & background...',
-    'Generating spoken voice track...',
-    'Animating lip-sync & expressions...',
-    'Finalizing talking video...',
-  ],
-  episode: [
-    'Structuring narrative arc...',
-    'Aligning characters & camera cues...',
-    'Building scene cards...',
-  ],
-  export: [
-    'Preparing scene clips & audio...',
-    'Mixing narration & background score...',
-    'Encoding watermark-free MP4...',
-  ],
+const HEADLINE_BY_MODE: Record<GenerationLoaderMode, string> = {
+  image: 'Creating your image...',
+  video: 'Creating your video...',
+  talking: 'Creating your video...',
+  episode: 'Creating your episode...',
+  export: 'Creating your video...',
 };
 
-function resolveActiveStepIndex(
-  mode: GenerationLoaderMode,
-  progress: number,
-  statusMessage?: string | null
-): number {
-  const msg = (statusMessage || '').toLowerCase();
-  if (mode === 'talking') {
-    if (msg.includes('step 4') || msg.includes('final') || progress >= 90) return 3;
-    if (
-      msg.includes('step 3') ||
-      msg.includes('lip-sync') ||
-      msg.includes('lipsync') ||
-      msg.includes('sadtalker') ||
-      msg.includes('liveportrait') ||
-      msg.includes('animat') ||
-      progress >= 58
-    ) {
-      return 2;
-    }
-    if (
-      msg.includes('step 2') ||
-      msg.includes('voice') ||
-      msg.includes('audio') ||
-      msg.includes('speech') ||
-      progress >= 36
-    ) {
-      return 1;
-    }
-    return 0;
-  }
-  if (mode === 'video') {
-    if (msg.includes('enhancing') || msg.includes('prompt')) return 0;
-    if (msg.includes('wait') || msg.includes('connect') || msg.includes('queue')) return 1;
-    if (msg.includes('render') || msg.includes('frame') || progress >= 50) return 2;
-  }
-  if (progress >= 55) return 2;
-  if (progress >= 25) return 1;
-  return 0;
-}
-
 /**
- * Cinema-grade frosted-glass AI generation overlay with Mint-Cyan pulse waves,
- * rotating cinema aperture ring around the A.H.I emblem, live progression steps,
+ * Sleek, minimal Obsidian (#07090E) & Mint-Cyan (#2DD4BF) generation overlay
+ * with glowing orbital aperture ring, calm status headline, subtle subline,
  * and smooth animated Mint-Cyan progress bar.
  */
 export function AhiGenerationLoader({
   mode,
   progress,
-  statusMessage,
+  statusMessage: _statusMessage,
   compact = false,
 }: AhiGenerationLoaderProps) {
   const uid = useId().replace(/:/g, '');
   const ringGradId = `ahi-gen-ring-${uid}`;
 
-  const steps = STEP_PIPELINES[mode];
-  const activeStepIdx = resolveActiveStepIndex(mode, progress, statusMessage);
+  const headline = HEADLINE_BY_MODE[mode];
   const clampedPct = Math.min(100, Math.max(8, Math.round(progress)));
 
   return (
     <div
       role="status"
       aria-live="polite"
-      className={`relative overflow-hidden bg-[rgba(17,22,33,0.78)] backdrop-blur-2xl border border-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_24px_60px_rgba(0,0,0,0.55)] flex flex-col items-center justify-center text-center ${
-        compact ? 'w-full aspect-video rounded-xl p-4 space-y-3.5' : 'w-full max-w-2xl aspect-video rounded-2xl p-6 sm:p-8 space-y-5'
+      className={`relative overflow-hidden bg-[rgba(7,9,14,0.88)] backdrop-blur-2xl border border-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_24px_60px_rgba(0,0,0,0.6)] flex flex-col items-center justify-center text-center ${
+        compact
+          ? 'w-full aspect-video rounded-xl p-4 space-y-3.5'
+          : 'w-full max-w-2xl aspect-video rounded-2xl p-6 sm:p-8 space-y-6'
       }`}
     >
       {/* Subtle radial Mint-Cyan ambient glow inside glass stage */}
@@ -405,11 +344,11 @@ export function AhiGenerationLoader({
         className="ahi-aura-breathe pointer-events-none absolute inset-0"
         style={{
           background:
-            'radial-gradient(circle at 50% 42%, rgba(45, 212, 191, 0.12), transparent 64%)',
+            'radial-gradient(circle at 50% 42%, rgba(45, 212, 191, 0.14), transparent 64%)',
         }}
       />
 
-      {/* Pulse wave + cinema aperture ring + centered A.H.I mark */}
+      {/* Pulse wave + cinema orbital ring + centered A.H.I mark */}
       <div
         className={`relative flex items-center justify-center shrink-0 ${
           compact ? 'w-16 h-16' : 'w-24 h-24'
@@ -428,7 +367,7 @@ export function AhiGenerationLoader({
         {/* Cinema Aperture Rotating SVG Ring */}
         <svg
           viewBox="0 0 96 96"
-          className="ahi-orbit-cw absolute inset-0 w-full h-full drop-shadow-[0_0_12px_rgba(45,212,191,0.45)]"
+          className="ahi-orbit-cw absolute inset-0 w-full h-full drop-shadow-[0_0_14px_rgba(45,212,191,0.5)]"
           aria-hidden="true"
         >
           <defs>
@@ -438,7 +377,6 @@ export function AhiGenerationLoader({
               <stop offset="100%" stopColor="#2DD4BF" stopOpacity="0.1" />
             </linearGradient>
           </defs>
-          {/* Segmented aperture arcs */}
           <circle
             cx="48"
             cy="48"
@@ -470,7 +408,7 @@ export function AhiGenerationLoader({
 
         {/* Frosted glass medallion with A.H.I emblem */}
         <div
-          className={`relative rounded-2xl bg-[rgba(7,9,14,0.82)] border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] flex items-center justify-center ${
+          className={`relative rounded-2xl bg-[#07090E]/90 border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] flex items-center justify-center ${
             compact ? 'w-10 h-10 rounded-xl' : 'w-14 h-14'
           }`}
         >
@@ -478,66 +416,29 @@ export function AhiGenerationLoader({
         </div>
       </div>
 
-      {/* Live Headline Status */}
-      <div className="relative z-10 space-y-1 max-w-md">
+      {/* Calm, Minimal Headline + Subtle Subline */}
+      <div className="relative z-10 space-y-1.5 max-w-md">
         <div
-          className={`font-display font-semibold text-[#F8FAFC] ${
+          className={`font-display font-semibold tracking-tight text-[#F8FAFC] ${
             compact ? 'text-xs' : 'text-base sm:text-lg'
           }`}
         >
-          {statusMessage || steps[activeStepIdx]}
+          {headline}
         </div>
-        {!compact && (
-          <p className="text-xs text-[#94A3B8]">
-            100% free &amp; watermark-free · Cinema-grade generation in progress
-          </p>
-        )}
+        <p className={compact ? 'text-[11px] text-[#94A3B8]' : 'text-xs text-[#94A3B8]'}>
+          This usually takes a few moments
+        </p>
       </div>
 
-      {/* Friendly Live Status Steps */}
-      {!compact && (
-        <div className="relative z-10 flex flex-wrap items-center justify-center gap-2 max-w-xl">
-          {steps.map((stepLabel, idx) => {
-            const isDone = idx < activeStepIdx;
-            const isActive = idx === activeStepIdx;
-            return (
-              <div
-                key={stepLabel}
-                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] border transition-all ${
-                  isActive
-                    ? 'bg-[#2DD4BF]/15 border-[#2DD4BF]/50 text-[#F8FAFC] shadow-[0_0_16px_rgba(45,212,191,0.16)]'
-                    : isDone
-                    ? 'bg-white/[0.04] border-[#34D399]/35 text-[#34D399]'
-                    : 'bg-[#07090E]/50 border-white/10 text-[#64748B]'
-                }`}
-              >
-                {isDone ? (
-                  <Check className="w-3 h-3 text-[#34D399]" />
-                ) : isActive ? (
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF] animate-pulse shadow-[0_0_8px_#2DD4BF]" />
-                ) : (
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#64748B]/50" />
-                )}
-                <span>{stepLabel}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Smooth Animated Progress Bar */}
-      <div className={`relative z-10 w-full ${compact ? 'max-w-[220px]' : 'max-w-sm'} space-y-1.5`}>
-        <div className="h-1.5 w-full bg-[#07090E]/85 border border-white/10 rounded-full overflow-hidden">
+      {/* Smooth Animated Mint-Cyan Progress Bar */}
+      <div className={`relative z-10 w-full ${compact ? 'max-w-[200px]' : 'max-w-xs'}`}>
+        <div className="h-1.5 w-full bg-[#07090E]/90 border border-white/10 rounded-full overflow-hidden">
           <div
             className="relative h-full rounded-full bg-gradient-to-r from-[#2DD4BF] to-[#34D399] shadow-[0_0_14px_rgba(45,212,191,0.55)] transition-all duration-500 ease-out"
             style={{ width: `${clampedPct}%` }}
           >
             <span className="ahi-bar-sweep absolute inset-y-0 left-0 w-1/2 bg-gradient-to-r from-transparent via-white/45 to-transparent" />
           </div>
-        </div>
-        <div className="flex items-center justify-between text-[11px] font-mono tabular-nums text-[#64748B]">
-          <span>A.H.I ENGINE</span>
-          <span className="text-[#2DD4BF]">{clampedPct}%</span>
         </div>
       </div>
     </div>

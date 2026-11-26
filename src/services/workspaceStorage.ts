@@ -15,7 +15,7 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 import { DEFAULT_SHOW_BIBLE, SEED_CHARACTERS, SEED_PROJECTS } from '../data/seedData';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { db, handleFirestoreError, isFirestoreOfflineError, OperationType } from '../firebase';
 import type {
   AnimationStyle,
   AspectRatio,
@@ -230,6 +230,14 @@ export async function ensureUserWorkspaceProfile(user: User): Promise<CloudWorks
       photoUrl: clampString(data?.photoUrl, 512, photoUrl),
     };
   } catch (error) {
+    if (isFirestoreOfflineError(error)) {
+      console.warn('Firestore offline during profile initialization; continuing with local profile.');
+      return {
+        uid: safeUid,
+        displayName,
+        photoUrl,
+      };
+    }
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
@@ -454,15 +462,22 @@ async function ensureUserWorkspaceProfileIfMissing(uid: string): Promise<void> {
 
   const initPromise = (async () => {
     const ref = doc(db, 'users', uid);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      await setDoc(ref, {
-        uid: sanitizeId(uid, 'user'),
-        displayName: 'Creator',
-        photoUrl: '',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) {
+        await setDoc(ref, {
+          uid: sanitizeId(uid, 'user'),
+          displayName: 'Creator',
+          photoUrl: '',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch (error) {
+      if (isFirestoreOfflineError(error)) {
+        return;
+      }
+      throw error;
     }
   })().finally(() => {
     pendingWorkspaceInit.delete(uid);
@@ -547,13 +562,14 @@ export function subscribeToCloudWorkspace(
   const unsubProjects = onSnapshot(
     projectsQuery,
     (snap) => {
-      if (snap.empty && !seededStarterProjects) {
+      if (snap.empty && !snap.metadata.fromCache && !seededStarterProjects) {
         seededStarterProjects = true;
         void Promise.all(SEED_PROJECTS.map((proj) => saveCloudProject(uid, proj, false))).catch(
           () => undefined
         );
         return;
       }
+      if (snap.empty) return;
       const list: VideoProject[] = snap.docs
         .map((d) => {
           const data = d.data();
@@ -585,6 +601,7 @@ export function subscribeToCloudWorkspace(
       callbacks.onProjects(list);
     },
     (error) => {
+      if (isFirestoreOfflineError(error)) return;
       handleFirestoreError(error, OperationType.LIST, projectsPath);
     }
   );
@@ -592,13 +609,14 @@ export function subscribeToCloudWorkspace(
   const unsubCharacters = onSnapshot(
     charactersQuery,
     (snap) => {
-      if (snap.empty && !seededStarterCharacters) {
+      if (snap.empty && !snap.metadata.fromCache && !seededStarterCharacters) {
         seededStarterCharacters = true;
         void Promise.all(SEED_CHARACTERS.map((char) => saveCloudCharacter(uid, char, false))).catch(
           () => undefined
         );
         return;
       }
+      if (snap.empty) return;
       const list: CharacterProfile[] = snap.docs.map((d) => {
         const data = d.data();
         return {
@@ -629,6 +647,7 @@ export function subscribeToCloudWorkspace(
       callbacks.onCharacters(list);
     },
     (error) => {
+      if (isFirestoreOfflineError(error)) return;
       handleFirestoreError(error, OperationType.LIST, charactersPath);
     }
   );
@@ -653,6 +672,7 @@ export function subscribeToCloudWorkspace(
       callbacks.onCreations(list);
     },
     (error) => {
+      if (isFirestoreOfflineError(error)) return;
       handleFirestoreError(error, OperationType.LIST, creationsPath);
     }
   );
@@ -665,7 +685,7 @@ export function subscribeToCloudWorkspace(
   const unsubShowBibles = onSnapshot(
     showBiblesQuery,
     (snap) => {
-      if (snap.empty && !seededShowBible) {
+      if (snap.empty && !snap.metadata.fromCache && !seededShowBible) {
         seededShowBible = true;
         void saveCloudShowBible(uid, DEFAULT_SHOW_BIBLE).catch(() => undefined);
         return;
@@ -685,6 +705,7 @@ export function subscribeToCloudWorkspace(
       }
     },
     (error) => {
+      if (isFirestoreOfflineError(error)) return;
       handleFirestoreError(error, OperationType.LIST, showBiblesPath);
     }
   );
