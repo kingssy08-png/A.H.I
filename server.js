@@ -15,6 +15,7 @@ import { Client, handle_file } from "@gradio/client";
 import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 dotenv.config();
 var ALLOWED_STYLES = [
+  "Warm Storybook 3D",
   "3D Pixar-Style Cartoon",
   "Anime",
   "Cinematic Film",
@@ -101,7 +102,11 @@ var SPACE_NODE_LABELS = {
   "BadToBest/EchoMimic": "EchoMimic Portrait Node",
   "fudan-generative-ai/hallo": "Hallo Portrait Lip-Sync Node"
 };
+var WARM_STORYBOOK_3D_MODIFIERS = "soft-focus vintage cinema lens, dreamy halation and warm sunlit bloom, gentle mist diffusion filter (Pro-Mist 1/2), low micro-contrast, soft pastel matte clay and felt textures, slightly blurred soft edges, warm overexposed sunlit sky in background, cozy handcrafted animated film still, 35mm film softness\u2014strictly avoid razor-sharp focus, avoid ultra-detailed pores or sharp fabric lines, avoid high-contrast HDR, avoid glossy studio lighting.";
+var WARM_STORYBOOK_3D_FRAMING = "wide 16:9 candid full-scene movie frame with foreground and background layers where characters interact naturally in a warm sunlit environment rather than sharp close-up portraits";
+var WARM_STORYBOOK_3D_NEGATIVE_PROMPT = "razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, glossy studio lighting, close-up portrait, text, watermark, signature, artifacts";
 var STYLE_PROMPT_DIRECTIVES = {
+  "Warm Storybook 3D": `${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}`,
   "3D Pixar-Style Cartoon": "3D Pixar-style animated feature film aesthetic, tactile subsurface skin and fur scattering, expressive eyes with crisp catchlights, warm studio rim lighting, shallow 35mm depth-of-field",
   "3D Cartoon": "3D animated cartoon feature aesthetic, subsurface shader softness, expressive silhouettes, vibrant color grading, warm rim highlights",
   Anime: "high-budget theatrical anime animation, crisp cel-shaded linework, luminous atmospheric sky, expressive motion streaks",
@@ -467,10 +472,18 @@ async function discoverRunningLipsyncSpaces() {
   }
 }
 function buildTranslatedImagePrompt(prompt, style) {
+  if (style === "Warm Storybook 3D") {
+    return `${prompt.trim().slice(0, 520)}, ${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}, no text, no watermark`;
+  }
   const styleCue = STYLE_PROMPT_DIRECTIVES[style] ?? `${style} visual aesthetic`;
   return `${prompt.trim().slice(0, 720)}, ${styleCue}, razor-sharp detail, balanced studio lighting, clean framing, no text, no watermark`;
 }
 function buildTranslatedVideoPrompt(prompt, style, aspectRatio, cameraMotion) {
+  if (style === "Warm Storybook 3D") {
+    const targetRatio = aspectRatio === "Auto" || !aspectRatio ? "16:9" : aspectRatio;
+    const motionSegment = cameraMotion && cameraMotion !== "Auto" && cameraMotion !== "Static" ? ` Gentle camera motion: ${CAMERA_MOTION_DIRECTIVES[cameraMotion] ?? `smooth cinematic camera ${cameraMotion.toLowerCase()} movement`}.` : "";
+    return `${prompt.trim().slice(0, 520)}. ${WARM_STORYBOOK_3D_FRAMING} (${targetRatio} aspect ratio).${motionSegment} ${WARM_STORYBOOK_3D_MODIFIERS} Coherent gentle natural motion, clean watermark-free film still.`;
+  }
   const styleCue = STYLE_PROMPT_DIRECTIVES[style] ?? `${style} visual aesthetic`;
   if (!cameraMotion || cameraMotion === "Auto" || cameraMotion === "Static") {
     return `${prompt.trim().slice(0, 780)}. Style: ${styleCue}, ${aspectRatio} framing, coherent temporal motion, clean watermark-free output.`;
@@ -601,7 +614,8 @@ function detectImageBufferMime(buf, headerContentType = "") {
 }
 async function runCloudflareFluxImage(fullPrompt, aspectRatio, accountId, apiToken) {
   const started = Date.now();
-  const ratioCue = aspectRatio === "1:1" ? "" : aspectRatio === "9:16" ? ", vertical 9:16 portrait composition" : aspectRatio === "21:9" ? ", ultra-wide 21:9 anamorphic framing" : ", widescreen 16:9 cinema composition";
+  const isWarmStorybook = fullPrompt.includes("Pro-Mist 1/2");
+  const ratioCue = aspectRatio === "1:1" ? "" : aspectRatio === "9:16" ? ", vertical 9:16 portrait composition" : aspectRatio === "21:9" ? ", ultra-wide 21:9 anamorphic framing" : isWarmStorybook ? "" : ", widescreen 16:9 cinema composition";
   const promptText = `${fullPrompt}${ratioCue}`.slice(0, 2e3);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 18e3);
@@ -764,8 +778,10 @@ async function enhanceCinemaVideoPrompt(options) {
   const metadataSummary = refs.map(
     (r, idx) => `Ref ${idx + 1} (${r.role}${r.label ? ` - ${r.label}` : ""})${r.description ? `: ${r.description}` : ""}`
   ).join("; ");
+  const isWarmStorybook = style === "Warm Storybook 3D";
   const expandedFallback = expandPlainEnglishCameraDirections(trimmedPrompt);
-  const fallbackPrompt = refs.length > 0 ? `${expandedFallback}. Visual identity & environment details: ${metadataSummary}` : expandedFallback;
+  const fallbackWithRefs = refs.length > 0 ? `${expandedFallback}. Visual identity & environment details: ${metadataSummary}` : expandedFallback;
+  const fallbackPrompt = isWarmStorybook ? `${fallbackWithRefs.slice(0, 520)}. ${WARM_STORYBOOK_3D_FRAMING}. ${WARM_STORYBOOK_3D_MODIFIERS}` : fallbackWithRefs;
   const allowExactSingleFrame = Boolean(animateExactFrame && refs.length === 1);
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
@@ -795,9 +811,9 @@ async function enhanceCinemaVideoPrompt(options) {
       cameraMotion && cameraMotion !== "Auto" && cameraMotion !== "Static" ? `Optional Camera Dropdown Hint (only use if user wrote no camera movement): ${cameraMotion}` : `Camera Mode: Purely follow the user's written prompt`,
       `Instructions (Smart Cinematography & Acting Director):`,
       `1. Expand the user's plain-English camera & acting directions into rich 3D animation direction prompts.`,
-      `2. Specify cinema depth-of-field, subsurface skin/fur scattering (when animated), expressive facial/eye acting, warm rim lighting, and smooth continuous camera trajectories.`,
+      isWarmStorybook ? `2. MANDATORY WARM STORYBOOK 3D LOOK: Compose as a ${WARM_STORYBOOK_3D_FRAMING}. Specify soft-focus vintage cinema lens, dreamy halation, warm sunlit bloom, gentle Pro-Mist 1/2 diffusion, low micro-contrast, soft pastel matte clay and felt textures, slightly blurred soft edges, warm overexposed sunlit sky in background, and 35mm film softness. Strictly avoid razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, glossy studio lighting, or close-up portraits.` : `2. Specify cinema depth-of-field, subsurface skin/fur scattering (when animated), expressive facial/eye acting, warm rim lighting, and smooth continuous camera trajectories.`,
       `3. Keep EVERY detail, action, subject, and angle the user wrote intact \u2014 never override or soften their camera trajectory.`,
-      refs.length > 0 ? `4. Treat ALL ${refs.length} uploaded reference image(s) strictly as visual identity, character, outfit, prop, and environment/style references. Extract exact facial features, hair, outfit colors/fabrics, props, and background/lighting details directly into the text description.` : `4. Add rich lighting, motion continuity, and atmospheric clarity matching the ${style} aesthetic.`,
+      refs.length > 0 ? `4. Treat ALL ${refs.length} uploaded reference image(s) strictly as visual identity, character, outfit, prop, and environment/style references. Extract exact facial features, hair, outfit colors/fabrics, props, and background/lighting details directly into the text description.` : isWarmStorybook ? `4. Build warm golden sunlit atmosphere, layered foreground/midground/background depth, gentle natural character interaction, and dreamy halation matching Warm Storybook 3D.` : `4. Add rich lighting, motion continuity, and atmospheric clarity matching the ${style} aesthetic.`,
       `5. Set canStartFromSingleImageFrame to true ONLY if there is 1 reference image AND the user's prompt starts directly from that exact composition without requesting a different starting angle.`
     ].join("\n")
   });
@@ -812,7 +828,7 @@ async function enhanceCinemaVideoPrompt(options) {
           model: candidate.model,
           contents: { parts },
           config: {
-            systemInstruction: "You are a Smart 3D Cinematography & Acting Director for AI video generators (Wan 2.1, CogVideoX, LTX-Video). Preserve 100% of the user prompt intent while weaving visual identity details from all reference images into one cohesive prompt.",
+            systemInstruction: isWarmStorybook ? "You are a Smart 3D Cinematography & Acting Director specializing in dreamy handcrafted Warm Storybook 3D animation. Always frame shots as wide 16:9 candid full-scene movie frames with foreground and background layers in sunlit environments (never close-up portraits), using soft-focus vintage cinema lenses, Pro-Mist 1/2 halation, low micro-contrast, and soft pastel matte clay/felt textures while strictly avoiding razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, or glossy studio lighting." : "You are a Smart 3D Cinematography & Acting Director for AI video generators (Wan 2.1, CogVideoX, LTX-Video). Preserve 100% of the user prompt intent while weaving visual identity details from all reference images into one cohesive prompt.",
             ...candidate.useThinkingLow ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {},
             responseMimeType: "application/json",
             responseSchema: {
@@ -883,8 +899,14 @@ async function buildTalkingSceneCompositingPrompt(options) {
     actionPrompt,
     style
   } = options;
-  const shotFramingDirective = shotAngle === "two-shot" && coStarCharacters.length > 0 ? `Wide medium two-shot showing ${characterLabel || "the active speaker"} alongside ${coStarCharacters.map((c) => c.label).join(" and ")} together inside the same environment; position ${characterLabel || "the active speaker"} clearly angled toward the camera with sharp eyes and unobstructed mouth while the listener turns attentively toward them` : shotAngle === "over-shoulder" && coStarCharacters.length > 0 ? `Cinema over-the-shoulder reverse shot from behind ${coStarCharacters[0]?.label || "the listener"}'s soft-focus foreground shoulder, looking directly at ${characterLabel || "the active speaker"}'s crisp, brightly lit face facing the camera in sharp focus` : `Sharp medium close-up talking portrait of ${characterLabel || "the active speaker"} facing toward the camera with head and shoulders clearly visible, unobstructed face and lips, shallow depth of field`;
-  const fallbackComposite = [
+  const isWarmStorybook = style === "Warm Storybook 3D";
+  const shotFramingDirective = isWarmStorybook ? `Wide 16:9 candid full-scene movie frame with foreground and background layers showing ${characterLabel || "the active speaker"}${coStarCharacters.length > 0 ? ` interacting naturally alongside ${coStarCharacters.map((c) => c.label).join(" and ")}` : ""} inside a warm sunlit environment rather than a sharp close-up portrait, with ${characterLabel || "the active speaker"}'s face gently turned toward camera and unobstructed for natural lip-sync` : shotAngle === "two-shot" && coStarCharacters.length > 0 ? `Wide medium two-shot showing ${characterLabel || "the active speaker"} alongside ${coStarCharacters.map((c) => c.label).join(" and ")} together inside the same environment; position ${characterLabel || "the active speaker"} clearly angled toward the camera with sharp eyes and unobstructed mouth while the listener turns attentively toward them` : shotAngle === "over-shoulder" && coStarCharacters.length > 0 ? `Cinema over-the-shoulder reverse shot from behind ${coStarCharacters[0]?.label || "the listener"}'s soft-focus foreground shoulder, looking directly at ${characterLabel || "the active speaker"}'s crisp, brightly lit face facing the camera in sharp focus` : `Sharp medium close-up talking portrait of ${characterLabel || "the active speaker"} facing toward the camera with head and shoulders clearly visible, unobstructed face and lips, shallow depth of field`;
+  const fallbackComposite = isWarmStorybook ? [
+    shotFramingDirective,
+    actionPrompt?.trim() ? actionPrompt.trim() : "interacting warmly and naturally while speaking",
+    backgroundPrompt?.trim() ? `set inside ${backgroundPrompt.trim()}` : "placed naturally inside a sunlit layered environment with warm overexposed sky in background",
+    WARM_STORYBOOK_3D_MODIFIERS
+  ].join(", ") : [
     shotFramingDirective,
     actionPrompt?.trim() ? actionPrompt.trim() : "warmly expressive while speaking",
     backgroundPrompt?.trim() ? `set inside ${backgroundPrompt.trim()}` : "placed seamlessly inside the matching background environment with cohesive studio lighting",
@@ -929,11 +951,11 @@ async function buildTalkingSceneCompositingPrompt(options) {
     text: [
       `Create ONE vivid image generation prompt (80-130 words) that seamlessly composites the ACTIVE SPEAKING CHARACTER into the shared scene.`,
       `Shot Angle Directive: ${shotFramingDirective}`,
-      backgroundBuffer ? `Match the exact background architecture, props, sky, lighting direction, and color temperature from the SHARED BACKGROUND ENVIRONMENT IMAGE.` : backgroundPrompt?.trim() ? `Background Setting: ${backgroundPrompt.trim()}` : `Background Setting: Cinematic atmospheric studio matching the scene`,
+      backgroundBuffer ? `Match the exact background architecture, props, sky, lighting direction, and color temperature from the SHARED BACKGROUND ENVIRONMENT IMAGE.` : backgroundPrompt?.trim() ? `Background Setting: ${backgroundPrompt.trim()}` : `Background Setting: ${isWarmStorybook ? "Warm sunlit outdoor/storybook environment with layered depth and overexposed sky" : "Cinematic atmospheric studio matching the scene"}`,
       `Visual Style: ${style}`,
       `Action / Expression / Camera Direction: ${actionPrompt?.trim() || "speaks warmly with natural expressive face"}`,
-      `LIGHTING & SHADOW RULE: Seamlessly composite the character(s) into the background with matching 3D rim-lighting, warm ambient bounce, and grounded contact shadows.`,
-      `CRITICAL LIP-SYNC RULE: Keep ONLY the ACTIVE SPEAKING CHARACTER's face sharp, unobstructed, well-lit, and oriented toward the camera so portrait lip-sync animates their mouth cleanly.`,
+      isWarmStorybook ? `LIGHTING & TEXTURE RULE: Use ${WARM_STORYBOOK_3D_MODIFIERS}` : `LIGHTING & SHADOW RULE: Seamlessly composite the character(s) into the background with matching 3D rim-lighting, warm ambient bounce, and grounded contact shadows.`,
+      isWarmStorybook ? `CRITICAL LIP-SYNC RULE: Keep the ACTIVE SPEAKING CHARACTER naturally visible and unobstructed in the wide candid scene so lip-sync can animate their mouth, without reverting to a tight razor-sharp close-up portrait.` : `CRITICAL LIP-SYNC RULE: Keep ONLY the ACTIVE SPEAKING CHARACTER's face sharp, unobstructed, well-lit, and oriented toward the camera so portrait lip-sync animates their mouth cleanly.`,
       `Preserve EVERY visual identity detail. Output plain prompt text only.`
     ].join("\n")
   });
@@ -944,7 +966,7 @@ async function buildTalkingSceneCompositingPrompt(options) {
           model,
           contents: { parts },
           config: {
-            systemInstruction: "You are a lead visual compositing and cinema shot-reverse-shot supervisor. Write one clean Flux/SDXL image prompt blending the speaker(s) into the shared background with matching 3D rim-lighting, contact shadows, and sharp speaker facial framing."
+            systemInstruction: isWarmStorybook ? "You are a lead visual compositing supervisor for Warm Storybook 3D animated films. Write one clean Flux/SDXL prompt composing a wide 16:9 candid full-scene frame with foreground and background layers in a sunlit environment, using soft-focus vintage cinema lens, Pro-Mist 1/2 halation, low micro-contrast, and soft pastel matte clay/felt textures." : "You are a lead visual compositing and cinema shot-reverse-shot supervisor. Write one clean Flux/SDXL image prompt blending the speaker(s) into the shared background with matching 3D rim-lighting, contact shadows, and sharp speaker facial framing."
           }
         }),
         12e3,
@@ -1086,6 +1108,7 @@ async function tryGradioImageEndpoint(target, nodeLabel, fullPrompt, dims, useSd
   }
   const paramsMeta = epInfo?.parameters ?? [];
   const isTurboOrSd = target.includes("stable-diffusion-3.5") || target.includes("prodia");
+  const isWarmStorybook = fullPrompt.includes("Pro-Mist 1/2");
   const payload = {};
   for (const p of paramsMeta) {
     const name = p.parameter_name;
@@ -1094,7 +1117,7 @@ async function tryGradioImageEndpoint(target, nodeLabel, fullPrompt, dims, useSd
     if ((lower === "prompt" || lower === "positive_prompt" || lower === "text") && !lower.includes("negative")) {
       payload[name] = fullPrompt;
     } else if (lower.includes("negative")) {
-      payload[name] = "text, watermark, signature, blurry, low quality, artifacts";
+      payload[name] = isWarmStorybook ? WARM_STORYBOOK_3D_NEGATIVE_PROMPT : "text, watermark, signature, blurry, low quality, artifacts";
     } else if (lower === "randomize_seed") {
       payload[name] = true;
     } else if (lower === "width") {
@@ -1431,7 +1454,7 @@ ${storyIdea.trim().slice(0, 3e3)}`,
       `- Structure the shots across the 5-beat animated story arc: Hook -> Adventure -> Funny Moment -> Heartwarming Lesson -> Outro (assign exact storyBeat tag to every shot).`,
       `- Every shot's durationSeconds MUST be between 5 and 8 seconds.`,
       `- Automatically assign the right character IDs (assignedCharacterIds), cameraAngle, cameraMotion (one of: Auto, Zoom In, Zoom Out, Pan Left, Pan Right, Orbit, Drone Flyover, Static), lightingMood, dialogueLines, narration, and sfxPresetId (one of: none, sparkle, boing, footsteps, whoosh, nature, fanfare).`,
-      `- Write lush 3D animation visualPrompt descriptions specifying subsurface skin/fur scattering, expressive eye movement, warm rim lighting, depth-of-field, and smooth camera paths (no text overlays or watermarks).`
+      safeStyle === "Warm Storybook 3D" ? `- MANDATORY WARM STORYBOOK 3D VISUAL STYLE: Write every visualPrompt as a wide 16:9 candid full-scene movie frame with foreground and background layers where characters interact naturally in sunlit environments (never close-up portraits), featuring soft-focus vintage cinema lens, dreamy halation, warm sunlit bloom, Pro-Mist 1/2 mist diffusion, low micro-contrast, soft pastel matte clay and felt textures, warm overexposed sunlit sky, and 35mm film softness \u2014 strictly avoiding razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, or glossy studio lighting.` : `- Write lush 3D animation visualPrompt descriptions specifying subsurface skin/fur scattering, expressive eye movement, warm rim lighting, depth-of-field, and smooth camera paths (no text overlays or watermarks).`
     ].filter(Boolean).join("\n\n");
     const responseSchema = {
       type: Type.OBJECT,
@@ -1648,6 +1671,7 @@ async function generateStoryboardJson(body) {
     const dims = SVG_VIEWBOX_BY_RATIO[safeRatio] ?? SVG_VIEWBOX_BY_RATIO["16:9"];
     const ai = getGeminiClient();
     const styleVisualDirective = {
+      "Warm Storybook 3D": "Compose wide 16:9 candid full-scene movie frames with foreground and background layers in sunlit environments rather than close-up portraits. Use soft pastel matte clay and felt tones, warm overexposed sunlit sky, gentle mist halation, low micro-contrast, and soft slightly blurred edges.",
       "3D Pixar-Style Cartoon": "Use tactile rounded volumetric forms, soft subsurface radial gradients, expressive hero silhouettes, warm rim lighting, and lush layered foreground/background depth.",
       "3D Cartoon": "Use warm rounded shapes, soft radial gradients for 3D volumetric shading, expressive character silhouettes, warm amber rim highlights, and cozy layered foreground/midground/background depth.",
       Anime: "Use dramatic cel-shaded flat color planes with crisp dark ink outlines, atmospheric gradient twilight skies, diagonal wind/motion streaks, and dynamic theatrical composition.",
@@ -2207,6 +2231,7 @@ async function streamStandardVideo(body, sendEvent) {
         continue;
       }
       const isDistilled = /ltx|fast|turbo|fp8/i.test(node.target);
+      const isWarmStorybookVideo = String(style) === "Warm Storybook 3D";
       const payload = {};
       let attachedPrimary = false;
       for (const p of paramsMeta) {
@@ -2215,6 +2240,8 @@ async function streamStandardVideo(body, sendEvent) {
         const lower = name.toLowerCase();
         if (lower.includes("prompt") && !lower.includes("negative")) {
           payload[name] = fullPrompt;
+        } else if (lower.includes("negative")) {
+          payload[name] = isWarmStorybookVideo ? WARM_STORYBOOK_3D_NEGATIVE_PROMPT : p.parameter_has_default ? p.parameter_default : "text, watermark, signature, blurry, low quality, artifacts";
         } else if (imageBlob && !attachedPrimary && !lower.includes("last") && !lower.includes("end") && (lower.includes("image") || p.component === "Image")) {
           payload[name] = handle_file(imageBlob);
           attachedPrimary = true;

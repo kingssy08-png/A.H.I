@@ -43,6 +43,14 @@ export const STYLE_PRESETS: Array<{
   gradientClass: string;
 }> = [
   {
+    id: 'Warm Storybook 3D',
+    title: 'Warm Storybook 3D',
+    subtitle: 'Soft-focus vintage 35mm cinema lens, Pro-Mist halation bloom, and pastel matte clay & felt textures.',
+    paletteHint: 'Sunlit bloom · Pastel matte clay · Soft 35mm mist',
+    previewImage: '/src/assets/images/style_3d_cartoon_1795461025240.jpg',
+    gradientClass: 'from-amber-950/60 via-zinc-900/90 to-zinc-950',
+  },
+  {
     id: '3D Pixar-Style Cartoon',
     title: '3D Pixar-Style Cartoon',
     subtitle: 'Tactile subsurface shaders, expressive rigging, and warm feature-film rim lighting.',

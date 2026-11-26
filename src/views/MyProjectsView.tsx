@@ -59,6 +59,7 @@ export function MyProjectsView({
             {(
               [
                 'All',
+                'Warm Storybook 3D',
                 '3D Pixar-Style Cartoon',
                 'Anime',
                 'Cinematic Film',

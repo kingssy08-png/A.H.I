@@ -70,6 +70,7 @@ interface SimpleCreateViewProps {
 }
 
 type SimpleStyleLabel =
+  | 'Warm Storybook 3D'
   | '3D Animation / Kids'
   | 'Anime'
   | 'Cinematic Film'
@@ -90,6 +91,7 @@ const REFERENCE_ROLES: ReferenceRole[] = [
 ];
 
 const STYLE_MAP: Record<SimpleStyleLabel, AnimationStyle> = {
+  'Warm Storybook 3D': 'Warm Storybook 3D',
   '3D Animation / Kids': '3D Pixar-Style Cartoon',
   Anime: 'Anime',
   'Cinematic Film': 'Cinematic Film',

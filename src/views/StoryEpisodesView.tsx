@@ -69,6 +69,7 @@ interface StoryEpisodesViewProps {
 }
 
 const SIMPLE_STYLES: Array<{ label: string; value: AnimationStyle }> = [
+  { label: 'Warm Storybook 3D', value: 'Warm Storybook 3D' },
   { label: '3D Animation / Kids', value: '3D Pixar-Style Cartoon' },
   { label: 'Anime', value: 'Anime' },
   { label: 'Cinematic Film', value: 'Cinematic Film' },

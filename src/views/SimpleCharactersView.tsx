@@ -39,6 +39,7 @@ interface SimpleCharactersViewProps {
 }
 
 const SIMPLE_STYLE_OPTIONS: Array<{ label: string; value: AnimationStyle }> = [
+  { label: 'Warm Storybook 3D', value: 'Warm Storybook 3D' },
   { label: '3D Animation / Kids', value: '3D Pixar-Style Cartoon' },
   { label: 'Anime', value: 'Anime' },
   { label: 'Cinematic Film', value: 'Cinematic Film' },

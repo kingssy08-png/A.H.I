@@ -10,6 +10,7 @@ export type StudioView =
   | 'export';
 
 export type AnimationStyle =
+  | 'Warm Storybook 3D'
   | '3D Pixar-Style Cartoon'
   | 'Anime'
   | 'Cinematic Film'

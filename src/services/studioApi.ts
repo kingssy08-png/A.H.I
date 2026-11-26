@@ -219,7 +219,17 @@ export interface HfVideoProgressEvent {
   error?: string;
 }
 
+const WARM_STORYBOOK_3D_MODIFIERS =
+  'soft-focus vintage cinema lens, dreamy halation and warm sunlit bloom, gentle mist diffusion filter (Pro-Mist 1/2), low micro-contrast, soft pastel matte clay and felt textures, slightly blurred soft edges, warm overexposed sunlit sky in background, cozy handcrafted animated film still, 35mm film softness—strictly avoid razor-sharp focus, avoid ultra-detailed pores or sharp fabric lines, avoid high-contrast HDR, avoid glossy studio lighting.';
+
+const WARM_STORYBOOK_3D_FRAMING =
+  'wide 16:9 candid full-scene movie frame with foreground and background layers where characters interact naturally in a warm sunlit environment rather than sharp close-up portraits';
+
+const WARM_STORYBOOK_3D_NEGATIVE_PROMPT =
+  'razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, glossy studio lighting, close-up portrait, text, watermark, signature, artifacts';
+
 const CLIENT_STYLE_CUES: Record<string, string> = {
+  'Warm Storybook 3D': `${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}`,
   '3D Pixar-Style Cartoon':
     '3D Pixar-style animated feature film aesthetic, subsurface scattering, expressive eyes, warm rim lighting, crisp 35mm depth-of-field',
   '3D Cartoon': '3D animated cartoon feature aesthetic, vibrant color grading, warm rim highlights',
@@ -338,9 +348,12 @@ async function generateHfSpaceBrowserFallback(
   height: number;
 }> {
   const started = Date.now();
-  const dims = CLIENT_DIMS_BY_RATIO[payload.aspectRatio ?? '16:9'] ?? { w: 1024, h: 1024 };
+  const isWarmStorybook = payload.style === 'Warm Storybook 3D';
+  const dims = CLIENT_DIMS_BY_RATIO[payload.aspectRatio ?? '16:9'] ?? { w: 1280, h: 720 };
   const styleCue = CLIENT_STYLE_CUES[payload.style] ?? `${payload.style} aesthetic`;
-  const enhancedPrompt = `${payload.prompt.trim().slice(0, 700)}, ${styleCue}, crisp detail, studio lighting, clean framing, no text, no watermark`;
+  const enhancedPrompt = isWarmStorybook
+    ? `${payload.prompt.trim().slice(0, 520)}, ${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}, no text, no watermark`
+    : `${payload.prompt.trim().slice(0, 700)}, ${styleCue}, crisp detail, studio lighting, clean framing, no text, no watermark`;
 
   const useSdxl = payload.engine === 'sdxl';
   const baseSpaces = useSdxl ? HF_BROWSER_SDXL_SPACES : HF_BROWSER_FLUX_SPACES;
@@ -407,7 +420,9 @@ async function generateHfSpaceBrowserFallback(
         ) {
           gradioPayload[name] = enhancedPrompt;
         } else if (lower.includes('negative')) {
-          gradioPayload[name] = 'text, watermark, signature, blurry, low quality, artifacts';
+          gradioPayload[name] = isWarmStorybook
+            ? WARM_STORYBOOK_3D_NEGATIVE_PROMPT
+            : 'text, watermark, signature, blurry, low quality, artifacts';
         } else if (lower === 'randomize_seed') {
           gradioPayload[name] = true;
         } else if (lower === 'width') {

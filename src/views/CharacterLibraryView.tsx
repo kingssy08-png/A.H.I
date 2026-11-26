@@ -342,6 +342,7 @@ export function CharacterLibraryView({
             {(
               [
                 'All',
+                'Warm Storybook 3D',
                 '3D Pixar-Style Cartoon',
                 'Anime',
                 'Cinematic Film',
