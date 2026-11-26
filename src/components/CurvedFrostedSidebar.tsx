@@ -142,9 +142,7 @@ export function CurvedFrostedSidebar({
     'Z',
   ].join(' ');
 
-  const shortUserId = authUser
-    ? `ID ${authUser.uid.slice(0, 6).toUpperCase()}`
-    : 'LOCAL GUEST';
+  const shortUserId = authUser ? `ID ${authUser.uid.slice(0, 6).toUpperCase()}` : 'MEMBER';
   const cleanName = displayName.trim() || 'Creator';
 
   return (
@@ -274,7 +272,7 @@ export function CurvedFrostedSidebar({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-1.5">
                     <span className="text-xs font-semibold text-[#F8FAFC] truncate">
-                      {authUser ? cleanName : 'Guest Creator'}
+                      {cleanName}
                     </span>
                     <span className="px-1.5 py-0.5 rounded-full bg-[#2DD4BF]/15 border border-[#2DD4BF]/40 text-[#2DD4BF] text-[9px] font-bold tracking-wide shrink-0">
                       FREE
@@ -290,7 +288,7 @@ export function CurvedFrostedSidebar({
                 <button
                   type="button"
                   onClick={onOpenProfile}
-                  title={authUser ? `${cleanName} · Account` : 'Sign In / Guest Workspace'}
+                  title={`${cleanName} · Account`}
                   className="relative w-9 h-9 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 hover:border-[#2DD4BF]/45 flex items-center justify-center transition-all cursor-pointer overflow-hidden"
                 >
                   {authUser?.photoURL ? (

@@ -3,7 +3,6 @@ import {
   browserLocalPersistence,
   browserSessionPersistence,
   createUserWithEmailAndPassword,
-  sendEmailVerification,
   setPersistence,
   signInWithEmailAndPassword,
   signInWithPopup,
@@ -17,11 +16,8 @@ import {
   Download,
   Eye,
   EyeOff,
-  HardDrive,
   Loader2,
   LogOut,
-  Mail,
-  RefreshCw,
   Upload,
   User as UserIcon,
   X,
@@ -32,14 +28,11 @@ import { AhiGeometricMark } from './AhiLoaders';
 interface ProfileModalProps {
   isOpen: boolean;
   authUser: User | null;
-  workspaceMode: 'cloud' | 'guest-unverified' | 'guest';
   displayName: string;
   projectCount: number;
   characterCount: number;
   creationCount: number;
   onClose: () => void;
-  onRefreshVerification: () => Promise<void>;
-  onSyncGuestToCloud: () => Promise<void>;
   onUpdateDisplayName: (nextName: string) => Promise<void>;
   onExportBackup: () => void;
   onImportBackup: (file: File) => void;
@@ -52,7 +45,7 @@ function formatAuthError(err: unknown): string {
       : '';
   switch (code) {
     case 'auth/operation-not-allowed':
-      return 'Email/Password sign-in is not enabled yet in Firebase Console. Use Continue with Google or Guest Mode for now.';
+      return 'Email/Password sign-in is not enabled yet in Firebase Console. Please use Continue with Google or enable Email/Password in Firebase Auth.';
     case 'auth/popup-closed-by-user':
       return 'Google sign-in popup was closed before completing.';
     case 'auth/popup-blocked':
@@ -100,14 +93,11 @@ function GoogleGlyph() {
 export function ProfileModal({
   isOpen,
   authUser,
-  workspaceMode,
   displayName,
   projectCount,
   characterCount,
   creationCount,
   onClose,
-  onRefreshVerification,
-  onSyncGuestToCloud,
   onUpdateDisplayName,
   onExportBackup,
   onImportBackup,
@@ -128,7 +118,6 @@ export function ProfileModal({
   // Signed-in Creator Workspace state
   const [nameInput, setNameInput] = useState(displayName);
   const [busy, setBusy] = useState(false);
-  const [syncing, setSyncing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
 
@@ -144,13 +133,13 @@ export function ProfileModal({
   }, [isOpen, displayName, authUser]);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || !authUser) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !busy) onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, busy, onClose]);
+  }, [isOpen, authUser, busy, onClose]);
 
   if (!isOpen) return null;
 
@@ -220,10 +209,7 @@ export function ProfileModal({
       const cred = await createUserWithEmailAndPassword(auth, cleanedEmail, signupPassword);
       const derivedName = cleanedEmail.split('@')[0] || 'Creator';
       await updateProfile(cred.user, { displayName: derivedName });
-      await sendEmailVerification(cred.user);
-      setInfoMsg(
-        'Account created! Check your inbox for a verification link to unlock Cloud Sync.'
-      );
+      await onUpdateDisplayName(derivedName).catch(() => undefined);
     } catch (err) {
       setErrorMsg(formatAuthError(err));
     } finally {
@@ -242,35 +228,6 @@ export function ProfileModal({
       setInfoMsg('Display name updated.');
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Could not update display name.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleResendVerification = async () => {
-    if (!authUser) return;
-    setErrorMsg(null);
-    setInfoMsg(null);
-    setBusy(true);
-    try {
-      await sendEmailVerification(authUser);
-      setInfoMsg('Verification email sent! Click the link in your inbox, then press Refresh.');
-    } catch (err) {
-      setErrorMsg(formatAuthError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleRefresh = async () => {
-    setErrorMsg(null);
-    setInfoMsg(null);
-    setBusy(true);
-    try {
-      await onRefreshVerification();
-      setInfoMsg('Account status refreshed.');
-    } catch (err) {
-      setErrorMsg(formatAuthError(err));
     } finally {
       setBusy(false);
     }
@@ -299,17 +256,11 @@ export function ProfileModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="ahi-auth-heading"
-        onClick={(e) => {
-          if (e.target === e.currentTarget && !busy) onClose();
-        }}
       >
         {/* Sibling Dark Obsidian + Backdrop Blur Layer (kept outside 3D perspective subtree) */}
         <div
           aria-hidden="true"
-          onClick={() => {
-            if (!busy) onClose();
-          }}
-          className="fixed inset-0 bg-[#07090E]/90 backdrop-blur-md"
+          className="fixed inset-0 bg-[#07090E]/92 backdrop-blur-md"
         />
 
         {/* Ambient Floating Mint-Cyan Light Orbs Behind the Circular Glass */}
@@ -332,17 +283,6 @@ export function ProfileModal({
             }}
           />
         </div>
-
-        {/* Subtle Close Button in Top-Right Backdrop */}
-        <button
-          type="button"
-          disabled={busy}
-          onClick={onClose}
-          aria-label="Close sign in card"
-          className="fixed top-5 right-5 z-20 w-10 h-10 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/15 text-[#94A3B8] hover:text-[#F8FAFC] flex items-center justify-center backdrop-blur-xl transition-colors cursor-pointer"
-        >
-          <X className="w-4 h-4" />
-        </button>
 
         {/* Centered 3D Flip Stage */}
         <div className="relative z-10 my-auto flex flex-col items-center">
@@ -687,16 +627,6 @@ export function ProfileModal({
               <span>{infoMsg}</span>
             </div>
           )}
-
-          {/* Subtle Guest Testing Link Below Circular Glass Card */}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onClose}
-            className="mt-5 px-4 py-1.5 rounded-full text-xs text-[#94A3B8] hover:text-[#2DD4BF] hover:bg-white/[0.04] transition-colors cursor-pointer"
-          >
-            Continue as Guest (Free)
-          </button>
         </div>
       </div>
     );
@@ -735,28 +665,12 @@ export function ProfileModal({
         </div>
 
         <div className="p-5 space-y-4 text-xs max-h-[84vh] overflow-y-auto">
-          <div
-            className={`rounded-2xl px-3.5 py-2.5 border flex items-center gap-2.5 ${
-              workspaceMode === 'cloud'
-                ? 'bg-[#2DD4BF]/10 border-[#2DD4BF]/35 text-[#F8FAFC]'
-                : 'bg-[#07090E]/70 border-white/10 text-[#F8FAFC]'
-            }`}
-          >
-            {workspaceMode === 'cloud' ? (
-              <Cloud className="w-4 h-4 text-[#2DD4BF] shrink-0" />
-            ) : (
-              <HardDrive className="w-4 h-4 text-[#2DD4BF] shrink-0" />
-            )}
+          <div className="rounded-2xl px-3.5 py-2.5 border flex items-center gap-2.5 bg-[#2DD4BF]/10 border-[#2DD4BF]/35 text-[#F8FAFC]">
+            <Cloud className="w-4 h-4 text-[#2DD4BF] shrink-0" />
             <div className="min-w-0 flex-1">
-              <div className="font-semibold">
-                {workspaceMode === 'cloud'
-                  ? 'Private Cloud Workspace Active'
-                  : 'Email Verification Pending · Local Guest Storage'}
-              </div>
+              <div className="font-semibold">Private Cloud Workspace Active</div>
               <div className="text-[11px] text-[#94A3B8]">
-                {workspaceMode === 'cloud'
-                  ? 'Projects, characters & creations sync privately to your account.'
-                  : 'Create immediately with zero paywalls, zero limits, and zero watermarks.'}
+                Projects, characters &amp; creations sync privately to your account.
               </div>
             </div>
           </div>
@@ -814,87 +728,26 @@ export function ProfileModal({
               </div>
             </div>
 
-            {workspaceMode === 'guest-unverified' && (
-              <div className="bg-[#07090E]/70 border border-[#2DD4BF]/40 rounded-xl p-3.5 space-y-2.5">
-                <div className="text-[#F8FAFC] font-medium">
-                  Verify your email to enable private Firestore cloud sync
-                </div>
-                <p className="text-[11px] text-[#94A3B8] leading-relaxed">
-                  While waiting, all creations continue saving locally in IndexedDB so nothing slows you down.
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void handleResendVerification()}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-[#F8FAFC] cursor-pointer"
-                  >
-                    <Mail className="w-3.5 h-3.5 text-[#2DD4BF]" />
-                    Resend Email
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void handleRefresh()}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2DD4BF] hover:bg-[#34D399] text-[#07090E] font-semibold cursor-pointer"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    I&apos;ve Verified
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {workspaceMode === 'cloud' && (
-              <>
-                <form onSubmit={(e) => void handleSaveName(e)} className="space-y-2">
-                  <label className="block text-[#94A3B8]">Creator Name</label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      required
-                      value={nameInput}
-                      onChange={(e) => setNameInput(e.target.value)}
-                      placeholder="Your name or studio handle"
-                      className="flex-1 bg-[#07090E]/85 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-[#F8FAFC] placeholder-[#64748B] focus:outline-none focus:border-[#2DD4BF]/60"
-                    />
-                    <button
-                      type="submit"
-                      disabled={busy || !nameInput.trim()}
-                      className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-[#F8FAFC] font-semibold cursor-pointer"
-                    >
-                      Save
-                    </button>
-                  </div>
-                </form>
-
+            <form onSubmit={(e) => void handleSaveName(e)} className="space-y-2">
+              <label className="block text-[#94A3B8]">Creator Name</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  required
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  placeholder="Your name or studio handle"
+                  className="flex-1 bg-[#07090E]/85 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-[#F8FAFC] placeholder-[#64748B] focus:outline-none focus:border-[#2DD4BF]/60"
+                />
                 <button
-                  type="button"
-                  disabled={syncing}
-                  onClick={async () => {
-                    setSyncing(true);
-                    setErrorMsg(null);
-                    setInfoMsg(null);
-                    try {
-                      await onSyncGuestToCloud();
-                      setInfoMsg('Local guest projects & creations synced to your cloud workspace.');
-                    } catch (err) {
-                      setErrorMsg(err instanceof Error ? err.message : 'Sync failed.');
-                    } finally {
-                      setSyncing(false);
-                    }
-                  }}
-                  className="w-full inline-flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-[#07090E]/70 hover:bg-white/5 border border-white/10 hover:border-[#2DD4BF]/40 text-[#F8FAFC] font-medium cursor-pointer transition-colors"
+                  type="submit"
+                  disabled={busy || !nameInput.trim()}
+                  className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-[#F8FAFC] font-semibold cursor-pointer"
                 >
-                  {syncing ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-[#2DD4BF]" />
-                  ) : (
-                    <Cloud className="w-3.5 h-3.5 text-[#2DD4BF]" />
-                  )}
-                  Sync Local Guest Work to Cloud
+                  Save
                 </button>
-              </>
-            )}
+              </div>
+            </form>
           </div>
 
           <div className="pt-2 border-t border-white/10 space-y-2">

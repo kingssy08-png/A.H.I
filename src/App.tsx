@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { LogIn, WifiOff } from 'lucide-react';
+import { WifiOff } from 'lucide-react';
 import { useOnlineStatus } from './hooks/usePWAInstall';
 import {
   deleteUser,
@@ -29,7 +29,6 @@ import {
   saveCloudProject,
   saveCloudShowBible,
   subscribeToCloudWorkspace,
-  syncGuestItemsToCloud,
   updateUserWorkspaceDisplayName,
 } from './services/workspaceStorage';
 import type {
@@ -45,17 +44,6 @@ import {
   exportProjectAsAhiFile,
   parseAhiProjectFile,
 } from './utils/ahiProjectFile';
-import {
-  deleteGuestCharacter,
-  deleteGuestCreation,
-  deleteGuestProject,
-  loadGuestWorkspace,
-  saveGuestActiveProjectId,
-  saveGuestCharacter,
-  saveGuestCreation,
-  saveGuestProject,
-  saveGuestShowBible,
-} from './utils/guestIndexedDb';
 import {
   loadStudioPreferences,
   saveStudioPreferences,
@@ -82,10 +70,9 @@ export default function App() {
   const [studioPrefs, setStudioPrefs] = useState<StudioPreferences>(() => loadStudioPreferences());
   const isOnline = useOnlineStatus();
 
-  // Firebase Auth & Workspace State
+  // Firebase Auth & Cloud Workspace State
   const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [guestWorkspaceReady, setGuestWorkspaceReady] = useState(false);
   const [minSplashDone, setMinSplashDone] = useState(() => !studioPrefs.playStartupIntro);
   const [splashVisible, setSplashVisible] = useState(() => studioPrefs.playStartupIntro);
   const [splashFadingOut, setSplashFadingOut] = useState(false);
@@ -114,48 +101,46 @@ export default function App() {
 
   const handleSkipSplash = useCallback(() => {
     setMinSplashDone(true);
+    if (!authReady) return;
     setSplashFadingOut(true);
     window.setTimeout(() => {
       setSplashVisible(false);
     }, 320);
-  }, []);
+  }, [authReady]);
 
-  // Load IndexedDB Guest Workspace immediately so visitors can create before signing in
-  const refreshFromGuestIndexedDb = useCallback(async () => {
-    try {
-      const snap = await loadGuestWorkspace();
-      setProjects(snap.projects);
-      setCharacters(snap.characters);
-      setCreations(snap.creations);
-      setShowBible(snap.showBible);
-      setActiveProjectId(snap.activeProjectId);
-    } finally {
-      setGuestWorkspaceReady(true);
-    }
-  }, []);
-
+  // Smooth fade-out once Firebase Auth & startup animation settle
   useEffect(() => {
-    void refreshFromGuestIndexedDb();
-  }, [refreshFromGuestIndexedDb]);
-
-  // Smooth fade-out once auth & initial workspace state settle
-  useEffect(() => {
-    if (!authReady || !guestWorkspaceReady || !minSplashDone || splashFadingOut) return;
+    if (!authReady || !minSplashDone || splashFadingOut) return;
     setSplashFadingOut(true);
     const hideTimer = window.setTimeout(() => {
       setSplashVisible(false);
     }, 480);
     return () => window.clearTimeout(hideTimer);
-  }, [authReady, guestWorkspaceReady, minSplashDone, splashFadingOut]);
+  }, [authReady, minSplashDone, splashFadingOut]);
 
-  // Listen to Firebase Auth state
+  // Strict Auth Listener: reject anonymous sessions and reset state when signed out
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
+      if (user && user.isAnonymous) {
+        void signOut(auth).catch(() => undefined);
+        setAuthUser(null);
+        setAuthReady(true);
+        return;
+      }
+
       setAuthUser(user);
       setAuthReady(true);
       if (!user) {
-        setCloudDisplayName(loadStudioPreferences().guestDisplayName || 'Creator');
-        void refreshFromGuestIndexedDb();
+        setProjects(SEED_PROJECTS);
+        setCharacters(SEED_CHARACTERS);
+        setCreations([]);
+        setShowBible(DEFAULT_SHOW_BIBLE);
+        setVoiceClips([]);
+        setActiveProjectId(SEED_PROJECTS[0].id);
+        setCloudDisplayName('');
+        setSettingsModalOpen(false);
+        setProfileModalOpen(false);
+        setFatalWorkspaceError(null);
       } else {
         setCloudDisplayName(
           user.displayName?.trim() || user.email?.split('@')[0] || 'Creator'
@@ -163,17 +148,11 @@ export default function App() {
       }
     });
     return () => unsub();
-  }, [refreshFromGuestIndexedDb]);
+  }, []);
 
-  const workspaceMode: 'cloud' | 'guest-unverified' | 'guest' = authUser
-    ? authUser.emailVerified
-      ? 'cloud'
-      : 'guest-unverified'
-    : 'guest';
-
-  // Attach Firestore workspace listeners only when auth is ready, signed in, and email-verified
+  // Immediate Cloud Sync: attach private Firestore listeners as soon as user is signed in
   useEffect(() => {
-    if (!authReady || !authUser || !authUser.emailVerified) return;
+    if (!authReady || !authUser) return;
 
     let cancelled = false;
     let unsubCloud: (() => void) | null = null;
@@ -220,7 +199,7 @@ export default function App() {
       cancelled = true;
       unsubCloud?.();
     };
-  }, [authReady, authUser, authUser?.emailVerified]);
+  }, [authReady, authUser]);
 
   const handleUpdatePreferences = (next: StudioPreferences) => {
     setStudioPrefs(next);
@@ -232,14 +211,12 @@ export default function App() {
 
   const handleSelectActiveProject = (projectId: string) => {
     setActiveProjectId(projectId);
-    void saveGuestActiveProjectId(projectId);
   };
 
   const handleUpdateProject = (updated: VideoProject) => {
     const stamped = { ...updated, updatedAt: new Date().toISOString() };
     setProjects((prev) => prev.map((p) => (p.id === stamped.id ? stamped : p)));
-    void saveGuestProject(stamped);
-    if (workspaceMode === 'cloud' && authUser) {
+    if (authUser) {
       void saveCloudProject(authUser.uid, stamped, true).catch((err) => {
         setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
       });
@@ -249,8 +226,7 @@ export default function App() {
   const handleCreateProject = (newProj: VideoProject) => {
     setProjects((prev) => [newProj, ...prev]);
     handleSelectActiveProject(newProj.id);
-    void saveGuestProject(newProj);
-    if (workspaceMode === 'cloud' && authUser) {
+    if (authUser) {
       void saveCloudProject(authUser.uid, newProj, false).catch((err) => {
         setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
       });
@@ -264,8 +240,7 @@ export default function App() {
     if (activeProjectId === projectId && remaining[0]) {
       handleSelectActiveProject(remaining[0].id);
     }
-    void deleteGuestProject(projectId);
-    if (workspaceMode === 'cloud' && authUser) {
+    if (authUser) {
       void deleteCloudProject(authUser.uid, projectId).catch((err) => {
         setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
       });
@@ -274,8 +249,7 @@ export default function App() {
 
   const handleAddCharacter = (char: CharacterProfile) => {
     setCharacters((prev) => [char, ...prev]);
-    void saveGuestCharacter(char);
-    if (workspaceMode === 'cloud' && authUser) {
+    if (authUser) {
       void saveCloudCharacter(authUser.uid, char, false).catch((err) => {
         setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
       });
@@ -284,8 +258,7 @@ export default function App() {
 
   const handleUpdateCharacter = (updatedChar: CharacterProfile) => {
     setCharacters((prev) => prev.map((c) => (c.id === updatedChar.id ? updatedChar : c)));
-    void saveGuestCharacter(updatedChar);
-    if (workspaceMode === 'cloud' && authUser) {
+    if (authUser) {
       void saveCloudCharacter(authUser.uid, updatedChar, true).catch((err) => {
         setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
       });
@@ -295,8 +268,7 @@ export default function App() {
   const handleUpdateShowBible = (nextBible: ShowBible) => {
     const stamped = { ...nextBible, updatedAt: new Date().toISOString() };
     setShowBible(stamped);
-    void saveGuestShowBible(stamped);
-    if (workspaceMode === 'cloud' && authUser) {
+    if (authUser) {
       void saveCloudShowBible(authUser.uid, stamped).catch((err) => {
         setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
       });
@@ -305,8 +277,7 @@ export default function App() {
 
   const handleDeleteCharacter = (charId: string) => {
     setCharacters((prev) => prev.filter((c) => c.id !== charId));
-    void deleteGuestCharacter(charId);
-    if (workspaceMode === 'cloud' && authUser) {
+    if (authUser) {
       void deleteCloudCharacter(authUser.uid, charId).catch((err) => {
         setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
       });
@@ -315,8 +286,7 @@ export default function App() {
 
   const handleSaveCreation = (creation: StudioCreation) => {
     setCreations((prev) => [creation, ...prev]);
-    void saveGuestCreation(creation);
-    if (workspaceMode === 'cloud' && authUser) {
+    if (authUser) {
       void saveCloudCreation(authUser.uid, creation).catch((err) => {
         setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
       });
@@ -325,8 +295,7 @@ export default function App() {
 
   const handleDeleteCreation = (creationId: string) => {
     setCreations((prev) => prev.filter((c) => c.id !== creationId));
-    void deleteGuestCreation(creationId);
-    if (workspaceMode === 'cloud' && authUser) {
+    if (authUser) {
       void deleteCloudCreation(authUser.uid, creationId).catch((err) => {
         setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
       });
@@ -397,21 +366,15 @@ export default function App() {
   };
 
   const handleLogoutOrAccount = async () => {
-    if (authUser) {
-      try {
-        await signOut(auth);
-        setNotice({
-          type: 'success',
-          text: 'Signed out cleanly. Guest Mode local storage remains active.',
-        });
-      } catch (err) {
-        setNotice({
-          type: 'error',
-          text: err instanceof Error ? err.message : 'Could not sign out.',
-        });
-      }
-    } else {
-      setProfileModalOpen(true);
+    if (!authUser) return;
+    try {
+      await signOut(auth);
+      setNotice(null);
+    } catch (err) {
+      setNotice({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Could not sign out.',
+      });
     }
   };
 
@@ -434,8 +397,7 @@ export default function App() {
           ? prev.map((p) => (p.id === imported.id ? imported : p))
           : [imported, ...prev]
       );
-      void saveGuestProject(imported);
-      if (workspaceMode === 'cloud' && authUser) {
+      if (authUser) {
         void saveCloudProject(authUser.uid, imported, existsLocally).catch((err) => {
           setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
         });
@@ -447,8 +409,7 @@ export default function App() {
         if (additions.length > 0) {
           setCharacters((prev) => [...additions, ...prev]);
           for (const char of additions) {
-            void saveGuestCharacter(char);
-            if (workspaceMode === 'cloud' && authUser) {
+            if (authUser) {
               void saveCloudCharacter(authUser.uid, char, false).catch((err) => {
                 setFatalWorkspaceError(err instanceof Error ? err : new Error(String(err)));
               });
@@ -472,43 +433,11 @@ export default function App() {
     }
   };
 
-  const handleRefreshVerification = async () => {
-    if (!auth.currentUser) return;
-    await auth.currentUser.reload();
-    await auth.currentUser.getIdToken(true);
-    setAuthUser(auth.currentUser);
-  };
-
-  const handleSyncGuestToCloud = async () => {
-    if (!authUser || !authUser.emailVerified) return;
-    const snap = await loadGuestWorkspace();
-    const { syncedCount } = await syncGuestItemsToCloud(
-      authUser.uid,
-      snap.projects,
-      snap.characters,
-      snap.creations
-    );
-    setNotice({
-      type: 'success',
-      text:
-        syncedCount > 0
-          ? `Synced ${syncedCount} local item${syncedCount > 1 ? 's' : ''} to your cloud workspace.`
-          : 'Your cloud workspace is already up to date.',
-    });
-  };
-
   const handleUpdateDisplayName = async (nextName: string) => {
     const clean = nextName.trim() || 'Creator';
-    if (!authUser) {
-      const updatedPrefs = { ...studioPrefs, guestDisplayName: clean };
-      handleUpdatePreferences(updatedPrefs);
-      setCloudDisplayName(clean);
-      return;
-    }
+    if (!authUser) return;
     await updateProfile(authUser, { displayName: clean });
-    if (authUser.emailVerified) {
-      await updateUserWorkspaceDisplayName(authUser.uid, clean, authUser.photoURL || '');
-    }
+    await updateUserWorkspaceDisplayName(authUser.uid, clean, authUser.photoURL || '');
     setCloudDisplayName(clean);
   };
 
@@ -521,23 +450,12 @@ export default function App() {
   };
 
   const handleDownloadAllProjects = async (): Promise<number> => {
-    const snap = await loadGuestWorkspace();
-    const mergedProjectsMap = new Map<string, VideoProject>();
-    for (const p of snap.projects) mergedProjectsMap.set(p.id, p);
-    for (const p of projects) mergedProjectsMap.set(p.id, p);
-
-    const mergedCharsMap = new Map<string, CharacterProfile>();
-    for (const c of snap.characters) mergedCharsMap.set(c.id, c);
-    for (const c of characters) mergedCharsMap.set(c.id, c);
-
-    const allProjects = Array.from(mergedProjectsMap.values());
-    const allChars = Array.from(mergedCharsMap.values());
-    exportAllProjectsAsAhiFile(allProjects, allChars, showBible);
+    exportAllProjectsAsAhiFile(projects, characters, showBible);
     setNotice({
       type: 'success',
-      text: `Downloaded backup of ${allProjects.length} project${allProjects.length === 1 ? '' : 's'} (.ahi file).`,
+      text: `Downloaded backup of ${projects.length} project${projects.length === 1 ? '' : 's'} (.ahi file).`,
     });
-    return allProjects.length;
+    return projects.length;
   };
 
   const handleDeleteAccount = async (): Promise<void> => {
@@ -545,9 +463,7 @@ export default function App() {
     if (!currentUser) {
       throw new Error('No signed-in account found.');
     }
-    if (currentUser.emailVerified) {
-      await deleteCloudWorkspace(currentUser.uid);
-    }
+    await deleteCloudWorkspace(currentUser.uid);
     try {
       await deleteUser(currentUser);
     } catch (err) {
@@ -567,10 +483,6 @@ export default function App() {
     } catch {
       // deleteUser already clears the session in most browsers
     }
-    setNotice({
-      type: 'success',
-      text: 'Your account and saved cloud projects have been permanently deleted.',
-    });
   };
 
   const isCreateFamily =
@@ -583,15 +495,15 @@ export default function App() {
     <div className="min-h-screen bg-[#07090E] text-[#F8FAFC] flex relative overflow-x-hidden">
       {/* Matte-Obsidian & Mint-Cyan Calligraphic Signature Splash Screen */}
       <AhiSplashScreen
-        visible={splashVisible}
-        fadingOut={splashFadingOut}
-        onSkip={handleSkipSplash}
+        visible={splashVisible || !authReady}
+        fadingOut={authReady && splashFadingOut}
+        onSkip={authReady ? handleSkipSplash : undefined}
         statusLabel={
           !authReady
-            ? 'Initializing A.H.I Studio...'
-            : authUser?.emailVerified
+            ? 'Checking studio session...'
+            : authUser
             ? 'Syncing cloud workspace...'
-            : 'Preparing your studio workspace...'
+            : 'Preparing studio sign-in...'
         }
       />
 
@@ -605,147 +517,183 @@ export default function App() {
         }}
       />
 
-      {/* Interactive Curved Frosted-Glass Sidebar */}
-      <CurvedFrostedSidebar
-        activeSection={activeSection}
-        authUser={authUser}
-        displayName={cloudDisplayName || studioPrefs.guestDisplayName || 'Creator'}
-        turboLive={false}
-        onSelectSection={handleSelectSidebarSection}
-        onOpenProfile={() => setProfileModalOpen(true)}
-        onOpenSettings={() => setSettingsModalOpen(true)}
-        onLogout={() => void handleLogoutOrAccount()}
-        onExpandedChange={setSidebarExpanded}
-      />
-
-      {/* Subtle Top-Right Sign In Pill for Guests */}
-      {!authUser && (
-        <button
-          type="button"
-          onClick={() => setProfileModalOpen(true)}
-          className="fixed top-4 right-4 sm:right-6 z-30 inline-flex items-center gap-2 px-4 py-2 rounded-full backdrop-blur-2xl bg-[rgba(17,22,33,0.72)] hover:bg-white/[0.09] border border-white/15 hover:border-[#2DD4BF]/55 text-xs font-semibold text-[#F8FAFC] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_12px_32px_rgba(0,0,0,0.45)] hover:shadow-[0_0_22px_rgba(45,212,191,0.22)] transition-all cursor-pointer"
-        >
-          <LogIn className="w-3.5 h-3.5 text-[#2DD4BF]" />
-          <span>Sign In</span>
-        </button>
+      {/* Strict Auth Gate: Show ONLY the Circular Frosted-Glass 3D Flip Login & Sign-Up Card when !authUser */}
+      {authReady && !authUser && (
+        <ProfileModal
+          isOpen={true}
+          authUser={null}
+          displayName=""
+          projectCount={0}
+          characterCount={0}
+          creationCount={0}
+          onClose={() => undefined}
+          onUpdateDisplayName={handleUpdateDisplayName}
+          onExportBackup={() => undefined}
+          onImportBackup={() => undefined}
+        />
       )}
 
-      {/* Main Content Area Cleared Cleanly to the Right of the Curved Sidebar */}
-      <main
-        className={`relative z-10 flex-1 min-w-0 pr-4 sm:pr-8 pt-6 transition-[padding-left] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-          sidebarExpanded
-            ? 'pl-[92px] sm:pl-[104px] md:pl-[292px]'
-            : 'pl-[92px] sm:pl-[104px]'
-        }`}
-      >
-        <div className="max-w-6xl mx-auto">
-          {notice && (
-            <div
-              className={`max-w-4xl mx-auto mb-5 rounded-2xl px-4 py-3 text-xs flex items-center justify-between gap-3 border backdrop-blur-2xl shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${
-                notice.type === 'error'
-                  ? 'bg-red-950/50 border-red-500/40 text-red-200'
-                  : 'bg-[rgba(17,22,33,0.72)] border-[#2DD4BF]/35 text-[#F8FAFC]'
-              }`}
-            >
-              <span>{notice.text}</span>
-              <button
-                type="button"
-                onClick={() => setNotice(null)}
-                className="text-[#94A3B8] hover:text-[#F8FAFC] cursor-pointer shrink-0"
-              >
-                Dismiss
-              </button>
+      {/* Unlocked Studio Workspace (Only mounted once authUser is signed in) */}
+      {authReady && authUser && (
+        <>
+          {/* Interactive Curved Frosted-Glass Sidebar */}
+          <CurvedFrostedSidebar
+            activeSection={activeSection}
+            authUser={authUser}
+            displayName={cloudDisplayName || 'Creator'}
+            turboLive={false}
+            onSelectSection={handleSelectSidebarSection}
+            onOpenProfile={() => setProfileModalOpen(true)}
+            onOpenSettings={() => setSettingsModalOpen(true)}
+            onLogout={() => void handleLogoutOrAccount()}
+            onExpandedChange={setSidebarExpanded}
+          />
+
+          {/* Main Content Area Cleared Cleanly to the Right of the Curved Sidebar */}
+          <main
+            className={`relative z-10 flex-1 min-w-0 pr-4 sm:pr-8 pt-6 transition-[padding-left] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+              sidebarExpanded
+                ? 'pl-[92px] sm:pl-[104px] md:pl-[292px]'
+                : 'pl-[92px] sm:pl-[104px]'
+            }`}
+          >
+            <div className="max-w-6xl mx-auto">
+              {notice && (
+                <div
+                  className={`max-w-4xl mx-auto mb-5 rounded-2xl px-4 py-3 text-xs flex items-center justify-between gap-3 border backdrop-blur-2xl shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${
+                    notice.type === 'error'
+                      ? 'bg-red-950/50 border-red-500/40 text-red-200'
+                      : 'bg-[rgba(17,22,33,0.72)] border-[#2DD4BF]/35 text-[#F8FAFC]'
+                  }`}
+                >
+                  <span>{notice.text}</span>
+                  <button
+                    type="button"
+                    onClick={() => setNotice(null)}
+                    className="text-[#94A3B8] hover:text-[#F8FAFC] cursor-pointer shrink-0"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+
+              {isCreateFamily && (
+                <SimpleCreateView
+                  characters={characters}
+                  creations={creations}
+                  preselectedCharacter={preselectedCharacter}
+                  onClearPreselectedCharacter={() => setPreselectedCharacter(null)}
+                  pendingPreset={pendingCreatePreset}
+                  onClearPendingPreset={() => setPendingCreatePreset(null)}
+                  onSaveCreation={handleSaveCreation}
+                  onAddClipToEpisode={handleAddClipToEpisode}
+                  sidebarExpanded={sidebarExpanded}
+                  defaultAspectRatio={studioPrefs.defaultAspectRatio}
+                />
+              )}
+
+              {activeSection === 'story' && (
+                <StoryEpisodesView
+                  activeProject={activeProject}
+                  projects={projects}
+                  characters={characters}
+                  showBible={showBible}
+                  initialStep={storyInitialStep}
+                  defaultAspectRatio={studioPrefs.defaultAspectRatio}
+                  onUpdateProject={handleUpdateProject}
+                  onCreateProject={handleCreateProject}
+                  onSelectProject={handleSelectActiveProject}
+                  onUpdateShowBible={handleUpdateShowBible}
+                />
+              )}
+
+              {activeSection === 'characters' && (
+                <SimpleCharactersView
+                  characters={characters}
+                  onAddCharacter={handleAddCharacter}
+                  onUpdateCharacter={handleUpdateCharacter}
+                  onDeleteCharacter={handleDeleteCharacter}
+                  onUseInCreate={(char) => {
+                    setPreselectedCharacter(char);
+                    setActiveSection('create');
+                  }}
+                />
+              )}
+
+              {activeSection === 'voice' && (
+                <div className="pb-16">
+                  <VoiceMusicStudioView
+                    activeProject={activeProject}
+                    characters={characters}
+                    voiceClips={voiceClips}
+                    onAddVoiceClip={(clip) => setVoiceClips((prev) => [clip, ...prev])}
+                    onAttachVoiceToScene={handleAttachVoiceToScene}
+                    onUpdateProject={handleUpdateProject}
+                  />
+                </div>
+              )}
+
+              {activeSection === 'projects' && (
+                <SimpleProjectsView
+                  projects={projects}
+                  creations={creations}
+                  activeProjectId={activeProject.id}
+                  onOpenStory={(projectId, step = 2) => {
+                    handleSelectActiveProject(projectId);
+                    setStoryInitialStep(step);
+                    setActiveSection('story');
+                  }}
+                  onCreateNewStory={() => {
+                    setStoryInitialStep(1);
+                    setActiveSection('story');
+                  }}
+                  onDeleteProject={handleDeleteProject}
+                  onExportAhiProject={handleExportAhiProject}
+                  onImportAhiFile={(file) => void handleImportAhiFile(file)}
+                  onOpenCreationInCreate={(creation) => {
+                    setPendingCreatePreset({
+                      prompt: creation.prompt,
+                      mode: creation.mode,
+                      style: creation.style,
+                      aspectRatio: creation.aspectRatio,
+                      resultUrl: creation.mediaUrl,
+                    });
+                    setActiveSection('create');
+                  }}
+                  onDeleteCreation={handleDeleteCreation}
+                />
+              )}
             </div>
-          )}
+          </main>
 
-          {isCreateFamily && (
-            <SimpleCreateView
-              characters={characters}
-              creations={creations}
-              preselectedCharacter={preselectedCharacter}
-              onClearPreselectedCharacter={() => setPreselectedCharacter(null)}
-              pendingPreset={pendingCreatePreset}
-              onClearPendingPreset={() => setPendingCreatePreset(null)}
-              onSaveCreation={handleSaveCreation}
-              onAddClipToEpisode={handleAddClipToEpisode}
-              sidebarExpanded={sidebarExpanded}
-              defaultAspectRatio={studioPrefs.defaultAspectRatio}
-            />
-          )}
+          <AccountSettingsModal
+            isOpen={settingsModalOpen}
+            authUser={authUser}
+            displayName={cloudDisplayName || 'Creator'}
+            preferences={studioPrefs}
+            projectCount={projects.length}
+            onClose={() => setSettingsModalOpen(false)}
+            onUpdateDisplayName={handleUpdateDisplayName}
+            onSendPasswordReset={handleSendPasswordReset}
+            onUpdatePreferences={handleUpdatePreferences}
+            onDownloadAllProjects={handleDownloadAllProjects}
+            onDeleteAccount={handleDeleteAccount}
+          />
 
-          {activeSection === 'story' && (
-            <StoryEpisodesView
-              activeProject={activeProject}
-              projects={projects}
-              characters={characters}
-              showBible={showBible}
-              initialStep={storyInitialStep}
-              defaultAspectRatio={studioPrefs.defaultAspectRatio}
-              onUpdateProject={handleUpdateProject}
-              onCreateProject={handleCreateProject}
-              onSelectProject={handleSelectActiveProject}
-              onUpdateShowBible={handleUpdateShowBible}
-            />
-          )}
-
-          {activeSection === 'characters' && (
-            <SimpleCharactersView
-              characters={characters}
-              onAddCharacter={handleAddCharacter}
-              onUpdateCharacter={handleUpdateCharacter}
-              onDeleteCharacter={handleDeleteCharacter}
-              onUseInCreate={(char) => {
-                setPreselectedCharacter(char);
-                setActiveSection('create');
-              }}
-            />
-          )}
-
-          {activeSection === 'voice' && (
-            <div className="pb-16">
-              <VoiceMusicStudioView
-                activeProject={activeProject}
-                characters={characters}
-                voiceClips={voiceClips}
-                onAddVoiceClip={(clip) => setVoiceClips((prev) => [clip, ...prev])}
-                onAttachVoiceToScene={handleAttachVoiceToScene}
-                onUpdateProject={handleUpdateProject}
-              />
-            </div>
-          )}
-
-          {activeSection === 'projects' && (
-            <SimpleProjectsView
-              projects={projects}
-              creations={creations}
-              activeProjectId={activeProject.id}
-              onOpenStory={(projectId, step = 2) => {
-                handleSelectActiveProject(projectId);
-                setStoryInitialStep(step);
-                setActiveSection('story');
-              }}
-              onCreateNewStory={() => {
-                setStoryInitialStep(1);
-                setActiveSection('story');
-              }}
-              onDeleteProject={handleDeleteProject}
-              onExportAhiProject={handleExportAhiProject}
-              onImportAhiFile={(file) => void handleImportAhiFile(file)}
-              onOpenCreationInCreate={(creation) => {
-                setPendingCreatePreset({
-                  prompt: creation.prompt,
-                  mode: creation.mode,
-                  style: creation.style,
-                  aspectRatio: creation.aspectRatio,
-                  resultUrl: creation.mediaUrl,
-                });
-                setActiveSection('create');
-              }}
-              onDeleteCreation={handleDeleteCreation}
-            />
-          )}
-        </div>
-      </main>
+          <ProfileModal
+            isOpen={profileModalOpen}
+            authUser={authUser}
+            displayName={cloudDisplayName || 'Creator'}
+            projectCount={projects.length}
+            characterCount={characters.length}
+            creationCount={creations.length}
+            onClose={() => setProfileModalOpen(false)}
+            onUpdateDisplayName={handleUpdateDisplayName}
+            onExportBackup={() => handleExportAhiProject(activeProject.id)}
+            onImportBackup={(file) => void handleImportAhiFile(file)}
+          />
+        </>
+      )}
 
       {!isOnline && (
         <div
@@ -753,39 +701,9 @@ export default function App() {
           className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-xl backdrop-blur-2xl bg-[rgba(17,22,33,0.9)] border border-amber-400/40 px-3.5 py-2 text-xs font-medium text-amber-200 shadow-[0_12px_32px_rgba(0,0,0,0.6)]"
         >
           <WifiOff className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span>Offline Mode — Local projects &amp; cached shell active</span>
+          <span>Offline Mode — Cached shell active</span>
         </div>
       )}
-
-      <AccountSettingsModal
-        isOpen={settingsModalOpen}
-        authUser={authUser}
-        displayName={cloudDisplayName || studioPrefs.guestDisplayName || 'Creator'}
-        preferences={studioPrefs}
-        projectCount={projects.length}
-        onClose={() => setSettingsModalOpen(false)}
-        onUpdateDisplayName={handleUpdateDisplayName}
-        onSendPasswordReset={handleSendPasswordReset}
-        onUpdatePreferences={handleUpdatePreferences}
-        onDownloadAllProjects={handleDownloadAllProjects}
-        onDeleteAccount={handleDeleteAccount}
-      />
-
-      <ProfileModal
-        isOpen={profileModalOpen}
-        authUser={authUser}
-        workspaceMode={workspaceMode}
-        displayName={cloudDisplayName || studioPrefs.guestDisplayName || 'Creator'}
-        projectCount={projects.length}
-        characterCount={characters.length}
-        creationCount={creations.length}
-        onClose={() => setProfileModalOpen(false)}
-        onRefreshVerification={handleRefreshVerification}
-        onSyncGuestToCloud={handleSyncGuestToCloud}
-        onUpdateDisplayName={handleUpdateDisplayName}
-        onExportBackup={() => handleExportAhiProject(activeProject.id)}
-        onImportBackup={(file) => void handleImportAhiFile(file)}
-      />
     </div>
   );
 }

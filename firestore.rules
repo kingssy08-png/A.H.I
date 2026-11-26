@@ -20,8 +20,11 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isVerifiedUser() {
-      return isSignedIn() && request.auth.token.email_verified == true;
+    function isNonAnonymousUser() {
+      return isSignedIn()
+        && (!('firebase' in request.auth.token)
+            || !('sign_in_provider' in request.auth.token.firebase)
+            || request.auth.token.firebase.sign_in_provider != 'anonymous');
     }
 
     function isValidId(id) {
@@ -29,7 +32,7 @@ service cloud.firestore {
     }
 
     function isOwner(userId) {
-      return isVerifiedUser() && request.auth.uid == userId;
+      return isNonAnonymousUser() && request.auth.uid == userId;
     }
 
     function hasWorkspaceParent(userId) {
@@ -42,6 +45,7 @@ service cloud.firestore {
         && style.size() >= 1
         && style.size() <= 40
         && style in [
+          'Warm Storybook 3D',
           '3D Pixar-Style Cartoon',
           'Anime',
           'Cinematic Film',

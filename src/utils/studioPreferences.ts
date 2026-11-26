@@ -3,7 +3,6 @@ import type { AspectRatio } from '../types/studio';
 export interface StudioPreferences {
   playStartupIntro: boolean;
   defaultAspectRatio: AspectRatio;
-  guestDisplayName: string;
 }
 
 const PREFS_STORAGE_KEY = 'ahi_studio_prefs_v1';
@@ -11,7 +10,6 @@ const PREFS_STORAGE_KEY = 'ahi_studio_prefs_v1';
 const DEFAULT_PREFERENCES: StudioPreferences = {
   playStartupIntro: true,
   defaultAspectRatio: '16:9',
-  guestDisplayName: 'Creator',
 };
 
 const VALID_RATIOS: AspectRatio[] = ['16:9', '9:16', '1:1'];
@@ -27,10 +25,6 @@ export function loadStudioPreferences(): StudioPreferences {
       defaultAspectRatio: VALID_RATIOS.includes(parsed.defaultAspectRatio as AspectRatio)
         ? (parsed.defaultAspectRatio as AspectRatio)
         : '16:9',
-      guestDisplayName:
-        typeof parsed.guestDisplayName === 'string' && parsed.guestDisplayName.trim()
-          ? parsed.guestDisplayName.trim().slice(0, 80)
-          : 'Creator',
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };

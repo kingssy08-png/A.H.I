@@ -33,6 +33,7 @@ import type {
 
 // Blueprint-synchronized constants (must match firebase-blueprint.json & firestore.rules verbatim)
 const VALID_STYLES: AnimationStyle[] = [
+  'Warm Storybook 3D',
   '3D Pixar-Style Cartoon',
   'Anime',
   'Cinematic Film',
@@ -548,7 +549,9 @@ export function subscribeToCloudWorkspace(
     (snap) => {
       if (snap.empty && !seededStarterProjects) {
         seededStarterProjects = true;
-        void Promise.all(SEED_PROJECTS.map((proj) => saveCloudProject(uid, proj, false)));
+        void Promise.all(SEED_PROJECTS.map((proj) => saveCloudProject(uid, proj, false))).catch(
+          () => undefined
+        );
         return;
       }
       const list: VideoProject[] = snap.docs
@@ -591,7 +594,9 @@ export function subscribeToCloudWorkspace(
     (snap) => {
       if (snap.empty && !seededStarterCharacters) {
         seededStarterCharacters = true;
-        void Promise.all(SEED_CHARACTERS.map((char) => saveCloudCharacter(uid, char, false)));
+        void Promise.all(SEED_CHARACTERS.map((char) => saveCloudCharacter(uid, char, false))).catch(
+          () => undefined
+        );
         return;
       }
       const list: CharacterProfile[] = snap.docs.map((d) => {
@@ -662,7 +667,7 @@ export function subscribeToCloudWorkspace(
     (snap) => {
       if (snap.empty && !seededShowBible) {
         seededShowBible = true;
-        void saveCloudShowBible(uid, DEFAULT_SHOW_BIBLE);
+        void saveCloudShowBible(uid, DEFAULT_SHOW_BIBLE).catch(() => undefined);
         return;
       }
       const docSnap = snap.docs[0];
@@ -690,36 +695,6 @@ export function subscribeToCloudWorkspace(
     unsubCreations();
     unsubShowBibles();
   };
-}
-
-export async function syncGuestItemsToCloud(
-  uid: string,
-  guestProjects: VideoProject[],
-  guestCharacters: CharacterProfile[],
-  guestCreations: StudioCreation[]
-): Promise<{ syncedCount: number }> {
-  const seedProjectIds = new Set(SEED_PROJECTS.map((p) => p.id));
-  const seedCharIds = new Set(SEED_CHARACTERS.map((c) => c.id));
-
-  const customProjects = guestProjects.filter((p) => !seedProjectIds.has(p.id));
-  const customChars = guestCharacters.filter((c) => !seedCharIds.has(c.id));
-
-  await ensureUserWorkspaceProfileIfMissing(uid);
-
-  let count = 0;
-  for (const proj of customProjects) {
-    await saveCloudProject(uid, proj, true);
-    count += 1;
-  }
-  for (const char of customChars) {
-    await saveCloudCharacter(uid, char, true);
-    count += 1;
-  }
-  for (const cre of guestCreations.slice(0, 12)) {
-    await saveCloudCreation(uid, cre);
-    count += 1;
-  }
-  return { syncedCount: count };
 }
 
 export async function deleteCloudWorkspace(uid: string): Promise<void> {

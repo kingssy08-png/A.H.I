@@ -19,7 +19,7 @@ function formatReadableError(rawMessage: string): string {
     };
     if (parsed.error) {
       if (parsed.error.includes('Quota exceeded')) {
-        return 'Daily Firestore free-tier quota was temporarily reached. You can continue creating locally in Guest Mode until tomorrow.';
+        return 'Daily Firestore free-tier quota was temporarily reached. Please try again tomorrow.';
       }
       return `${parsed.operationType ? `[${parsed.operationType}] ` : ''}${parsed.error}`;
     }

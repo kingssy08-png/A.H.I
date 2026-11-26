@@ -8,7 +8,7 @@ export interface DirtyDozenCase {
   name: string;
   path: string;
   operation: 'get' | 'list' | 'create' | 'update' | 'delete';
-  auth: { uid: string; emailVerified: boolean } | null;
+  auth: { uid: string; provider?: string } | null;
   parentExists?: boolean;
   payload?: Record<string, unknown>;
   expectedResult: 'PERMISSION_DENIED';
@@ -26,12 +26,12 @@ export const DIRTY_DOZEN_PAYLOADS: DirtyDozenCase[] = [
   },
   {
     id: 2,
-    name: 'Unverified email spoofing write',
+    name: 'Anonymous auth workspace bypass attempt',
     path: '/users/user_abc/projects/proj_1',
     operation: 'create',
-    auth: { uid: 'user_abc', emailVerified: false },
+    auth: { uid: 'user_abc', provider: 'anonymous' },
     parentExists: true,
-    payload: { id: 'proj_1', ownerId: 'user_abc', title: 'Spoofed' },
+    payload: { id: 'proj_1', ownerId: 'user_abc', title: 'Anonymous' },
     expectedResult: 'PERMISSION_DENIED',
   },
   {
@@ -39,7 +39,7 @@ export const DIRTY_DOZEN_PAYLOADS: DirtyDozenCase[] = [
     name: 'Cross-tenant read attempt',
     path: '/users/victim_1/characters/char_1',
     operation: 'get',
-    auth: { uid: 'attacker_9', emailVerified: true },
+    auth: { uid: 'attacker_9', provider: 'password' },
     expectedResult: 'PERMISSION_DENIED',
   },
   {
@@ -47,7 +47,7 @@ export const DIRTY_DOZEN_PAYLOADS: DirtyDozenCase[] = [
     name: 'Cross-tenant ownerId spoofing on create',
     path: '/users/attacker_9/projects/proj_1',
     operation: 'create',
-    auth: { uid: 'attacker_9', emailVerified: true },
+    auth: { uid: 'attacker_9', provider: 'password' },
     parentExists: true,
     payload: { id: 'proj_1', ownerId: 'victim_1', title: 'Hijack' },
     expectedResult: 'PERMISSION_DENIED',
@@ -57,7 +57,7 @@ export const DIRTY_DOZEN_PAYLOADS: DirtyDozenCase[] = [
     name: 'Orphaned subcollection write without parent workspace doc',
     path: '/users/user_abc/creations/cre_1',
     operation: 'create',
-    auth: { uid: 'user_abc', emailVerified: true },
+    auth: { uid: 'user_abc', provider: 'password' },
     parentExists: false,
     payload: { id: 'cre_1', ownerId: 'user_abc', mode: 'image', prompt: 'Fox' },
     expectedResult: 'PERMISSION_DENIED',
@@ -67,7 +67,7 @@ export const DIRTY_DOZEN_PAYLOADS: DirtyDozenCase[] = [
     name: 'ID poisoning with invalid characters',
     path: '/users/user_abc/projects/invalid$id!',
     operation: 'create',
-    auth: { uid: 'user_abc', emailVerified: true },
+    auth: { uid: 'user_abc', provider: 'password' },
     parentExists: true,
     payload: { id: 'invalid$id!', ownerId: 'user_abc', title: 'Bad ID' },
     expectedResult: 'PERMISSION_DENIED',
@@ -77,7 +77,7 @@ export const DIRTY_DOZEN_PAYLOADS: DirtyDozenCase[] = [
     name: 'Shadow ghost field injection (isAdmin/role)',
     path: '/users/user_abc',
     operation: 'create',
-    auth: { uid: 'user_abc', emailVerified: true },
+    auth: { uid: 'user_abc', provider: 'password' },
     payload: {
       uid: 'user_abc',
       displayName: 'Creator',
@@ -91,7 +91,7 @@ export const DIRTY_DOZEN_PAYLOADS: DirtyDozenCase[] = [
     name: 'Immutable ownerId/createdAt mutation on update',
     path: '/users/user_abc/projects/proj_1',
     operation: 'update',
-    auth: { uid: 'user_abc', emailVerified: true },
+    auth: { uid: 'user_abc', provider: 'password' },
     parentExists: true,
     payload: { ownerId: 'other_user', createdAt: '1999-01-01T00:00:00Z' },
     expectedResult: 'PERMISSION_DENIED',
@@ -101,7 +101,7 @@ export const DIRTY_DOZEN_PAYLOADS: DirtyDozenCase[] = [
     name: 'Client timestamp forgery (createdAt != request.time)',
     path: '/users/user_abc/characters/char_1',
     operation: 'create',
-    auth: { uid: 'user_abc', emailVerified: true },
+    auth: { uid: 'user_abc', provider: 'password' },
     parentExists: true,
     payload: {
       id: 'char_1',
@@ -116,7 +116,7 @@ export const DIRTY_DOZEN_PAYLOADS: DirtyDozenCase[] = [
     name: 'Value type poisoning on update (invalid enum & non-string title)',
     path: '/users/user_abc/projects/proj_1',
     operation: 'update',
-    auth: { uid: 'user_abc', emailVerified: true },
+    auth: { uid: 'user_abc', provider: 'password' },
     parentExists: true,
     payload: { title: 99999, aspectRatio: '100:1' },
     expectedResult: 'PERMISSION_DENIED',
@@ -126,7 +126,7 @@ export const DIRTY_DOZEN_PAYLOADS: DirtyDozenCase[] = [
     name: 'Denial-of-Wallet oversized thumbnailUrl (> 200KB) or characterIds (> 20)',
     path: '/users/user_abc/projects/proj_1',
     operation: 'create',
-    auth: { uid: 'user_abc', emailVerified: true },
+    auth: { uid: 'user_abc', provider: 'password' },
     parentExists: true,
     payload: {
       id: 'proj_1',
@@ -142,7 +142,7 @@ export const DIRTY_DOZEN_PAYLOADS: DirtyDozenCase[] = [
     name: 'Blanket collection list scraping on /users',
     path: '/users',
     operation: 'list',
-    auth: { uid: 'user_abc', emailVerified: true },
+    auth: { uid: 'user_abc', provider: 'password' },
     expectedResult: 'PERMISSION_DENIED',
   },
 ];

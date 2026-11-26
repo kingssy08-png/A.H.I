@@ -253,7 +253,7 @@ export function AccountSettingsModal({
               <div>
                 <div className="text-[11px] text-[#64748B]">Email Address</div>
                 <div className="text-xs text-[#F8FAFC] font-medium truncate mt-0.5">
-                  {authUser?.email || 'Guest Session · Local Browser'}
+                  {authUser?.email || 'Signed-in Creator'}
                 </div>
               </div>
               <div>
@@ -406,8 +406,7 @@ export function AccountSettingsModal({
 
             {!authUser ? (
               <p className="text-[11px] text-[#94A3B8]">
-                You are currently browsing in Guest Mode. Sign in to manage or permanently delete a
-                cloud account.
+                Sign in to manage or permanently delete your account.
               </p>
             ) : !showDeleteConfirm ? (
               <div className="flex flex-wrap items-center justify-between gap-3">
