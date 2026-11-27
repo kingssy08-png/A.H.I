@@ -249,7 +249,11 @@ function readAndResizeImageFile(file: File): Promise<string> {
       }
       const img = new Image();
       img.onload = () => {
-        const maxSide = 1024;
+        const maxSide = 1600;
+        if (Math.max(img.width, img.height) <= maxSide) {
+          resolve(rawUrl);
+          return;
+        }
         const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
         const width = Math.max(1, Math.round(img.width * scale));
         const height = Math.max(1, Math.round(img.height * scale));
@@ -261,8 +265,11 @@ function readAndResizeImageFile(file: File): Promise<string> {
           resolve(rawUrl);
           return;
         }
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
         ctx.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/webp', 0.88));
+        const outputMime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+        resolve(canvas.toDataURL(outputMime, 0.96));
       };
       img.onerror = () => resolve(rawUrl);
       img.src = rawUrl;
@@ -1146,15 +1153,18 @@ export function SimpleCreateView({
         attachedRefs.length > 0
           ? [sceneRef, ...attachedRefs].slice(0, MAX_REFERENCES)
           : [sceneRef];
+      const targetSize = aspectRatioToSizeLabel(result.aspectRatio);
       setMode('video');
+      setSizeLabel(targetSize);
       setAttachedRefs(nextRefs);
       const nextPrompt = prompt.trim() || result.prompt;
       setPrompt(nextPrompt);
       void runGeneration({
         mode: 'video',
         prompt: nextPrompt,
+        sizeLabel: targetSize,
         refs: nextRefs,
-        animateExactFrame: nextRefs.length === 1,
+        animateExactFrame: true,
       });
     } else {
       setMode('video');

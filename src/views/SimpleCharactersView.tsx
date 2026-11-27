@@ -124,10 +124,14 @@ function resizeUploadedImage(file: File): Promise<string> {
       }
       const img = new Image();
       img.onload = () => {
-        const maxSide = 768;
+        const maxSide = 1400;
         const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
         const width = Math.max(1, Math.round(img.width * scale));
         const height = Math.max(1, Math.round(img.height * scale));
+        if (scale === 1 && rawUrl.length <= 2_500_000) {
+          resolve(rawUrl);
+          return;
+        }
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
@@ -137,7 +141,9 @@ function resizeUploadedImage(file: File): Promise<string> {
           return;
         }
         ctx.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/webp', 0.88));
+        const outputMime =
+          file.type === 'image/png' || file.type === 'image/webp' ? 'image/png' : 'image/jpeg';
+        resolve(canvas.toDataURL(outputMime, 0.95));
       };
       img.onerror = () => resolve(rawUrl);
       img.src = rawUrl;

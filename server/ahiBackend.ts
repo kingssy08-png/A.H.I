@@ -1,11 +1,17 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Buffer } from 'node:buffer';
 import dotenv from 'dotenv';
 import { Client, handle_file } from '@gradio/client';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 dotenv.config();
+
+const execFileAsync = promisify(execFile);
 
 const ALLOWED_STYLES = [
   'Warm Storybook 3D',
@@ -47,6 +53,27 @@ const CLOUDFLARE_DIMENSIONS_BY_RATIO: Record<string, { w: number; h: number }> =
   '21:9': { w: 1008, h: 432 },
 };
 
+const FLUX1_DEV_DIMENSIONS_BY_RATIO: Record<string, { w: number; h: number }> = {
+  '16:9': { w: 1536, h: 864 },
+  '9:16': { w: 864, h: 1536 },
+  '1:1': { w: 1024, h: 1024 },
+  '21:9': { w: 1344, h: 576 },
+};
+
+const FLUX2_DIMENSIONS_BY_RATIO: Record<string, { w: number; h: number }> = {
+  '16:9': { w: 1024, h: 576 },
+  '9:16': { w: 576, h: 1024 },
+  '1:1': { w: 1024, h: 1024 },
+  '21:9': { w: 1008, h: 432 },
+};
+
+const VIDEO_DIMENSIONS_BY_RATIO: Record<string, { w: number; h: number }> = {
+  '16:9': { w: 1024, h: 576 },
+  '9:16': { w: 576, h: 1024 },
+  '1:1': { w: 768, h: 768 },
+  '21:9': { w: 896, h: 384 },
+};
+
 const SVG_VIEWBOX_BY_RATIO: Record<string, { w: number; h: number }> = {
   '16:9': { w: 640, h: 360 },
   '9:16': { w: 360, h: 640 },
@@ -56,6 +83,8 @@ const SVG_VIEWBOX_BY_RATIO: Record<string, { w: number; h: number }> = {
 
 const SPACE_ID_RE = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
 const FLUX_SPACES = [
+  'black-forest-labs/FLUX.1-dev',
+  'Qwen/Qwen-Image-2512',
   'black-forest-labs/FLUX.1-schnell',
   'stabilityai/stable-diffusion-3.5-large-turbo',
   'prodia/fast-stable-diffusion',
@@ -68,8 +97,10 @@ const BACKGROUND_REMOVAL_SPACES = [
 const REFERENCE_EDIT_SPACES = [
   'black-forest-labs/FLUX.1-Kontext-dev',
   'Qwen/Qwen-Image-Edit',
+  'black-forest-labs/FLUX.2-dev',
 ];
 const SDXL_SPACES = [
+  'Qwen/Qwen-Image-2512',
   'stabilityai/stable-diffusion-3.5-large-turbo',
   'prodia/fast-stable-diffusion',
   'stabilityai/stable-diffusion-xl-base-1.0',
@@ -77,8 +108,8 @@ const SDXL_SPACES = [
 ];
 const VIDEO_SPACES_T2V = [
   'Lightricks/ltx-video-distilled',
-  'DeepRat/LTX-Video-ZeroGPU-Optimized',
   'alexnasa/ltx-2-TURBO',
+  'DeepRat/LTX-Video-ZeroGPU-Optimized',
   'zai-org/CogVideoX-5B-Space',
   'zai-org/CogVideoX-2B-Space',
 ];
@@ -91,6 +122,7 @@ const VIDEO_SPACES_I2V = [
   'multimodalart/wan2-1-fast',
   'ysharma/wan2-1-fast',
   'Lightricks/ltx-video-distilled',
+  'alexnasa/ltx-2-TURBO',
   'zai-org/CogVideoX-5B-Space',
   'zai-org/CogVideoX-2B-Space',
 ];
@@ -105,6 +137,9 @@ const LIPSYNC_SPACES = [
 const SPACE_NODE_LABELS: Record<string, string> = {
   'cloudflare/flux-1-schnell': 'Cloudflare Workers AI (Instant 1–3s)',
   'colab/turbo-gpu': 'Colab Turbo GPU (Private Zero-Queue)',
+  'black-forest-labs/FLUX.1-dev': 'FLUX.1 Dev HF Node',
+  'black-forest-labs/FLUX.2-dev': 'FLUX.2 Dev Multi-Ref Node',
+  'Qwen/Qwen-Image-2512': 'Qwen Image 2512 HF Node',
   'black-forest-labs/FLUX.1-schnell': 'Flux.1 HF Node',
   'stabilityai/stable-diffusion-3.5-large-turbo': 'SD 3.5 Turbo HF Node',
   'prodia/fast-stable-diffusion': 'Prodia Fast SD HF Node',
@@ -137,26 +172,27 @@ const WARM_STORYBOOK_3D_FRAMING =
 const WARM_STORYBOOK_3D_NEGATIVE_PROMPT =
   'razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, glossy studio lighting, close-up portrait, text, watermark, signature, artifacts';
 
+const PREMIUM_3D_ANIMATION_BENCHMARK =
+  'theatrical feature-film-quality 3D character animation benchmark, sculpted stylized expressive faces with natural anatomical proportions, warm subsurface skin shading with amber bounce light, detailed irises with corneal catchlights, individually sculpted eyebrows, eyelashes, lips, and detailed hair strands/braids, woven textile and subtle brushed metallic PBR surface shaders, cinematic global illumination, soft ambient occlusion, shallow depth-of-field bokeh, rich environment depth and theatrical color grading—not photorealism, not flat cartoon, not glossy plastic AI skin';
+
 const STYLE_PROMPT_DIRECTIVES: Record<string, string> = {
   'Warm Storybook 3D': `${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}`,
-  '3D Pixar-Style Cartoon':
-    '3D Pixar-style animated feature film aesthetic, tactile subsurface skin and fur scattering, expressive eyes with crisp catchlights, warm studio rim lighting, shallow 35mm depth-of-field',
-  '3D Cartoon':
-    '3D animated cartoon feature aesthetic, subsurface shader softness, expressive silhouettes, vibrant color grading, warm rim highlights',
+  '3D Pixar-Style Cartoon': PREMIUM_3D_ANIMATION_BENCHMARK,
+  '3D Cartoon': PREMIUM_3D_ANIMATION_BENCHMARK,
   Anime:
-    'high-budget theatrical anime animation, crisp cel-shaded linework, luminous atmospheric sky, expressive motion streaks',
+    'high-budget theatrical anime feature animation, expressive cel-shaded linework, layered painted environments, volumetric atmospheric lighting, dynamic cinema depth',
   'Cinematic Film':
-    '35mm anamorphic cinema film look, moody chiaroscuro volumetric light shafts, rich contrast, subtle filmic bokeh',
+    '35mm anamorphic theatrical film aesthetic, volumetric light shafts, rich cinematic color grading, optical shallow depth-of-field bokeh',
   '2D Illustration':
-    'hand-crafted 2D editorial illustration aesthetic, rich gouache brushwork, layered storybook depth',
+    'hand-crafted theatrical 2D editorial illustration aesthetic, rich gouache brushwork, layered depth and atmospheric lighting',
   'Music Video':
-    'high-energy stylized music video cinematography, kinetic gimbal choreography, vibrant neon & rim lighting, anamorphic lens flare',
+    'high-energy stylized music video cinematography, kinetic lighting choreography, vibrant rim lighting, anamorphic lens flare',
   'Product Ad':
-    'luxury commercial product studio macro photography, sleek brushed metal & glass specular highlights, obsidian pedestal reflections, shallow depth of field',
+    'luxury commercial product studio macro cinematography, physically accurate glass & brushed metal specular highlights, soft reflections, shallow depth of field',
   Realistic:
-    'photorealistic live-action cinema camera aesthetic, physically accurate reflections, natural lens clarity',
+    'photorealistic live-action cinema camera aesthetic, physically accurate global illumination, natural lens depth',
   Educational:
-    'clean 2.5D educational motion graphics explainer aesthetic, crisp geometric clarity, high visual contrast',
+    'clean 2.5D animated explainer motion graphics aesthetic, crisp geometric clarity, warm studio readability',
 };
 
 const CAMERA_MOTION_DIRECTIVES: Record<string, string> = {
@@ -533,8 +569,8 @@ async function discoverRunningImageSpaces(useSdxl: boolean): Promise<string[]> {
 
   const curated = useSdxl ? SDXL_SPACES : FLUX_SPACES;
   const searchTerms = useSdxl
-    ? ['stable-diffusion-3.5', 'stable-diffusion-xl']
-    : ['FLUX.1-schnell', 'flux'];
+    ? ['Qwen-Image', 'stable-diffusion-3.5', 'stable-diffusion-xl']
+    : ['FLUX.1-dev', 'Qwen-Image', 'FLUX.1-schnell'];
 
   try {
     const [curatedStatuses, searchResults] = await Promise.all([
@@ -547,7 +583,7 @@ async function discoverRunningImageSpaces(useSdxl: boolean): Promise<string[]> {
       const id = String(item.id ?? '');
       if (!id || !SPACE_ID_RE.test(id)) return;
       if (item.sdk !== 'gradio' || item.runtime?.stage !== 'RUNNING') return;
-      if (/video|i2v|t2v|upscaler|lora|trainer/i.test(id)) return;
+      if (/video|i2v|t2v|upscaler|lora|trainer|angles|multiple-angles|pose|depth|canny|controlnet/i.test(id)) return;
       const idx = curated.indexOf(id);
       const likes = typeof item.likes === 'number' ? item.likes : 0;
       const prev = discoveredMap.get(id);
@@ -621,7 +657,7 @@ function buildTranslatedImagePrompt(prompt: string, style: string): string {
     return `${prompt.trim().slice(0, 520)}, ${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}, no text, no watermark`;
   }
   const styleCue = STYLE_PROMPT_DIRECTIVES[style] ?? `${style} visual aesthetic`;
-  return `${prompt.trim().slice(0, 720)}, ${styleCue}, razor-sharp detail, balanced studio lighting, clean framing, no text, no watermark`;
+  return `${prompt.trim().slice(0, 720)}, ${styleCue}, cohesive edge-to-edge scene composition, no letterbox bars, no text, no watermark`;
 }
 
 function buildTranslatedVideoPrompt(
@@ -802,12 +838,413 @@ function detectImageBufferMime(buf: Buffer, headerContentType = ''): string | nu
   return null;
 }
 
+function parseAspectRatioNumeric(aspectRatio: string): number {
+  if (aspectRatio === '9:16') return 9 / 16;
+  if (aspectRatio === '1:1') return 1;
+  if (aspectRatio === '21:9') return 21 / 9;
+  return 16 / 9;
+}
+
+function isDimensionsMatchingRatio(
+  width: number,
+  height: number,
+  aspectRatio: string,
+  tolerance = 0.025
+): boolean {
+  if (!width || !height) return false;
+  const target = parseAspectRatioNumeric(aspectRatio);
+  const actual = width / height;
+  return Math.abs(actual - target) <= tolerance * target;
+}
+
+function getImageBufferDimensions(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length < 24) return null;
+  // PNG IHDR
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    const width = buf.readUInt32BE(16);
+    const height = buf.readUInt32BE(20);
+    if (width > 0 && height > 0) return { width, height };
+  }
+  // WEBP
+  if (buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP') {
+    const chunk = buf.subarray(12, 16).toString('ascii');
+    if (chunk === 'VP8X' && buf.length >= 30) {
+      const width = 1 + (buf[24] | (buf[25] << 8) | (buf[26] << 16));
+      const height = 1 + (buf[27] | (buf[28] << 8) | (buf[29] << 16));
+      if (width > 0 && height > 0) return { width, height };
+    } else if (chunk === 'VP8L' && buf.length >= 25) {
+      const b0 = buf[21];
+      const b1 = buf[22];
+      const b2 = buf[23];
+      const b3 = buf[24];
+      const width = 1 + (((b1 & 0x3f) << 8) | b0);
+      const height = 1 + (((b3 & 0x0f) << 10) | (b2 << 2) | ((b1 & 0xc0) >> 6));
+      if (width > 0 && height > 0) return { width, height };
+    } else if (chunk === 'VP8 ' && buf.length >= 30) {
+      const width = buf.readUInt16LE(26) & 0x3fff;
+      const height = buf.readUInt16LE(28) & 0x3fff;
+      if (width > 0 && height > 0) return { width, height };
+    }
+  }
+  // JPEG SOFn
+  if (buf[0] === 0xff && buf[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 8 < buf.length) {
+      if (buf[offset] !== 0xff) {
+        offset++;
+        continue;
+      }
+      const marker = buf[offset + 1];
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+        offset += 2;
+        continue;
+      }
+      if (offset + 4 >= buf.length) break;
+      const segLen = buf.readUInt16BE(offset + 2);
+      if (segLen < 2) break;
+      const isSof =
+        (marker >= 0xc0 && marker <= 0xc3) ||
+        (marker >= 0xc5 && marker <= 0xc7) ||
+        (marker >= 0xc9 && marker <= 0xcb) ||
+        (marker >= 0xcd && marker <= 0xcf);
+      if (isSof && offset + 9 < buf.length) {
+        const height = buf.readUInt16BE(offset + 5);
+        const width = buf.readUInt16BE(offset + 7);
+        if (width > 0 && height > 0) return { width, height };
+      }
+      offset += 2 + segLen;
+    }
+  }
+  return null;
+}
+
+async function getImageBufferDimensionsReliable(
+  buf: Buffer,
+  extHint = 'bin'
+): Promise<{ width: number; height: number } | null> {
+  const fast = getImageBufferDimensions(buf);
+  if (fast) return fast;
+  const tmpFile = path.join(os.tmpdir(), `ahi-img-${crypto.randomUUID()}.${extHint}`);
+  try {
+    await fs.promises.writeFile(tmpFile, buf);
+    const { stdout } = await execFileAsync('ffprobe', [
+      '-v',
+      'error',
+      '-select_streams',
+      'v:0',
+      '-show_entries',
+      'stream=width,height',
+      '-of',
+      'json',
+      tmpFile,
+    ]);
+    const parsed = JSON.parse(stdout) as { streams?: Array<{ width?: number; height?: number }> };
+    const st = parsed.streams?.[0];
+    if (st?.width && st?.height) {
+      return { width: st.width, height: st.height };
+    }
+  } catch {
+    // ignore ffprobe fallback failure
+  } finally {
+    await fs.promises.unlink(tmpFile).catch(() => {});
+  }
+  return null;
+}
+
+async function snapImageBufferWithFfmpeg(
+  buf: Buffer,
+  targetW: number,
+  targetH: number
+): Promise<{ buffer: Buffer; mimeType: string; width: number; height: number } | null> {
+  const id = crypto.randomUUID();
+  const inFile = path.join(os.tmpdir(), `ahi-snap-in-${id}.img`);
+  const outFile = path.join(os.tmpdir(), `ahi-snap-out-${id}.png`);
+  try {
+    await fs.promises.writeFile(inFile, buf);
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-i',
+      inFile,
+      '-vf',
+      `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH}`,
+      '-frames:v',
+      '1',
+      outFile,
+    ]);
+    const outBuf = await fs.promises.readFile(outFile);
+    const dims = getImageBufferDimensions(outBuf) ?? { width: targetW, height: targetH };
+    return {
+      buffer: outBuf,
+      mimeType: 'image/png',
+      width: dims.width,
+      height: dims.height,
+    };
+  } catch {
+    return null;
+  } finally {
+    await fs.promises.unlink(inFile).catch(() => {});
+    await fs.promises.unlink(outFile).catch(() => {});
+  }
+}
+
+async function prepareNeutralStudioCanvasServer(
+  buf: Buffer,
+  mimeType: string,
+  targetW: number,
+  targetH: number
+): Promise<{ buffer: Buffer; mimeType: string }> {
+  const id = crypto.randomUUID();
+  const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
+  const inFile = path.join(os.tmpdir(), `ahi-prep-in-${id}.${ext}`);
+  const outFile = path.join(os.tmpdir(), `ahi-prep-out-${id}.png`);
+  const fgMaxW = Math.round(targetW * 0.92);
+  const fgMaxH = Math.round(targetH * 0.92);
+  try {
+    await fs.promises.writeFile(inFile, buf);
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      `color=c=#E8ECF2:s=${targetW}x${targetH}:d=1`,
+      '-i',
+      inFile,
+      '-filter_complex',
+      `[1:v]scale=${fgMaxW}:${fgMaxH}:force_original_aspect_ratio=decrease[fg];[0:v][fg]overlay=(W-w)/2:(H-h)/2`,
+      '-frames:v',
+      '1',
+      outFile,
+    ]);
+    const outBuf = await fs.promises.readFile(outFile);
+    if (outBuf.length > 128) {
+      return { buffer: outBuf, mimeType: 'image/png' };
+    }
+  } catch {
+    // fallback to original buffer if ffmpeg composite fails
+  } finally {
+    await fs.promises.unlink(inFile).catch(() => {});
+    await fs.promises.unlink(outFile).catch(() => {});
+  }
+  return { buffer: buf, mimeType };
+}
+
+async function outpaintBufferWithHfSpace(
+  buf: Buffer,
+  mimeType: string,
+  aspectRatio: string,
+  prompt: string
+): Promise<{ buffer: Buffer; mimeType: string; width: number; height: number } | null> {
+  const outpaintDims = CLOUDFLARE_DIMENSIONS_BY_RATIO[aspectRatio] ?? CLOUDFLARE_DIMENSIONS_BY_RATIO['16:9'];
+  try {
+    const blob = new Blob([new Uint8Array(buf)], { type: mimeType });
+    const client = await withTimeout(
+      Client.connect('fffiloni/diffusers-image-outpaint', getHfGradioOptions()),
+      12000,
+      'Outpaint Space connection timed out.'
+    );
+    const pred = await withTimeout(
+      client.predict('/infer', {
+        image: handle_file(blob),
+        width: outpaintDims.w,
+        height: outpaintDims.h,
+        overlap_percentage: 10,
+        num_inference_steps: 12,
+        resize_option: 'Full',
+        custom_resize_percentage: 50,
+        prompt_input: prompt.slice(0, 320),
+        alignment: 'Middle',
+        overlap_left: true,
+        overlap_right: true,
+        overlap_top: true,
+        overlap_bottom: true,
+      }),
+      32000,
+      'Outpaint Space inference timed out.'
+    );
+    const outUrl = extractGradioMediaUrl(pred.data);
+    if (!outUrl) return null;
+    const imgRes = await withTimeout(
+      fetch(outUrl, { headers: getHfAuthHeadersForUrl(outUrl) }),
+      15000,
+      'Outpaint Space image download timed out.'
+    );
+    if (!imgRes.ok) return null;
+    const outBuf = Buffer.from(await imgRes.arrayBuffer());
+    const outMime = detectImageBufferMime(outBuf, imgRes.headers.get('content-type') || '') || 'image/png';
+    const dims = await getImageBufferDimensionsReliable(outBuf);
+    if (!dims) return null;
+    return { buffer: outBuf, mimeType: outMime, width: dims.width, height: dims.height };
+  } catch {
+    return null;
+  }
+}
+
+async function enforceServerImageAspectRatio(
+  imageDataUrl: string,
+  aspectRatio: string,
+  prompt: string
+): Promise<{ imageDataUrl: string; width: number; height: number }> {
+  const resolved = resolveImageInputToBuffer(imageDataUrl);
+  if (!resolved) {
+    throw new Error('Could not decode generated image buffer.');
+  }
+  const targetDims = IMAGE_DIMENSIONS_BY_RATIO[aspectRatio] ?? IMAGE_DIMENSIONS_BY_RATIO['16:9'];
+  const actualDims = await getImageBufferDimensionsReliable(resolved.buffer);
+  if (!actualDims) {
+    return { imageDataUrl, width: targetDims.w, height: targetDims.h };
+  }
+
+  if (isDimensionsMatchingRatio(actualDims.width, actualDims.height, aspectRatio, 0.015)) {
+    return { imageDataUrl, width: actualDims.width, height: actualDims.height };
+  }
+
+  const targetRatio = parseAspectRatioNumeric(aspectRatio);
+  const actualRatio = actualDims.width / actualDims.height;
+  const sameOrientation =
+    aspectRatio === '1:1' || (targetRatio > 1 && actualRatio > 1) || (targetRatio < 1 && actualRatio < 1);
+  const relDelta = Math.abs(actualRatio - targetRatio) / targetRatio;
+
+  if (sameOrientation && relDelta <= 0.18) {
+    const snapped = await snapImageBufferWithFfmpeg(resolved.buffer, targetDims.w, targetDims.h);
+    if (snapped) {
+      return {
+        imageDataUrl: `data:${snapped.mimeType};base64,${snapped.buffer.toString('base64')}`,
+        width: snapped.width,
+        height: snapped.height,
+      };
+    }
+  }
+
+  const outpainted = await outpaintBufferWithHfSpace(
+    resolved.buffer,
+    resolved.mimeType,
+    aspectRatio,
+    prompt
+  );
+  if (outpainted && isDimensionsMatchingRatio(outpainted.width, outpainted.height, aspectRatio, 0.08)) {
+    if (!isDimensionsMatchingRatio(outpainted.width, outpainted.height, aspectRatio, 0.015)) {
+      const snapped = await snapImageBufferWithFfmpeg(outpainted.buffer, targetDims.w, targetDims.h);
+      if (snapped) {
+        return {
+          imageDataUrl: `data:${snapped.mimeType};base64,${snapped.buffer.toString('base64')}`,
+          width: snapped.width,
+          height: snapped.height,
+        };
+      }
+    }
+    return {
+      imageDataUrl: `data:${outpainted.mimeType};base64,${outpainted.buffer.toString('base64')}`,
+      width: outpainted.width,
+      height: outpainted.height,
+    };
+  }
+
+  throw new Error(
+    `Generated image dimensions ${actualDims.width}x${actualDims.height} do not match requested ${aspectRatio}.`
+  );
+}
+
+async function inspectAndNormalizeVideoBuffer(
+  buf: Buffer,
+  aspectRatio: string
+): Promise<{ buffer: Buffer; mimeType: string; width: number; height: number }> {
+  const id = crypto.randomUUID();
+  const inFile = path.join(os.tmpdir(), `ahi-vid-in-${id}.mp4`);
+  const outFile = path.join(os.tmpdir(), `ahi-vid-out-${id}.mp4`);
+  const targetDims = VIDEO_DIMENSIONS_BY_RATIO[aspectRatio] ?? VIDEO_DIMENSIONS_BY_RATIO['16:9'];
+  const targetRatio = parseAspectRatioNumeric(aspectRatio);
+
+  try {
+    await fs.promises.writeFile(inFile, buf);
+    const { stdout } = await execFileAsync('ffprobe', [
+      '-v',
+      'error',
+      '-select_streams',
+      'v:0',
+      '-show_entries',
+      'stream=width,height',
+      '-of',
+      'json',
+      inFile,
+    ]);
+    const parsed = JSON.parse(stdout) as { streams?: Array<{ width?: number; height?: number }> };
+    const streamInfo = parsed.streams?.[0];
+    const width = Number(streamInfo?.width ?? 0);
+    const height = Number(streamInfo?.height ?? 0);
+
+    if (!width || !height) {
+      return { buffer: buf, mimeType: 'video/mp4', width: targetDims.w, height: targetDims.h };
+    }
+
+    if (isDimensionsMatchingRatio(width, height, aspectRatio, 0.025)) {
+      return { buffer: buf, mimeType: 'video/mp4', width, height };
+    }
+
+    const actualRatio = width / height;
+    const sameOrientation =
+      aspectRatio === '1:1' ||
+      (targetRatio > 1 && actualRatio > 1) ||
+      (targetRatio < 1 && actualRatio < 1);
+    const relDelta = Math.abs(actualRatio - targetRatio) / targetRatio;
+
+    if (!sameOrientation) {
+      throw new Error(
+        `Video node returned ${width}x${height} (${actualRatio > 1 ? 'landscape' : 'portrait'}) instead of requested ${aspectRatio}.`
+      );
+    }
+
+    if (relDelta <= 0.22) {
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-i',
+        inFile,
+        '-vf',
+        `scale=${targetDims.w}:${targetDims.h}:force_original_aspect_ratio=increase,crop=${targetDims.w}:${targetDims.h}`,
+        '-c:v',
+        'libx264',
+        '-preset',
+        'veryfast',
+        '-crf',
+        '18',
+        '-pix_fmt',
+        'yuv420p',
+        '-movflags',
+        '+faststart',
+        '-c:a',
+        'copy',
+        outFile,
+      ]);
+      const normalizedBuf = await fs.promises.readFile(outFile);
+      if (normalizedBuf.length > 256) {
+        return {
+          buffer: normalizedBuf,
+          mimeType: 'video/mp4',
+          width: targetDims.w,
+          height: targetDims.h,
+        };
+      }
+    }
+
+    throw new Error(`Video aspect ratio ${width}x${height} deviated too far from ${aspectRatio}.`);
+  } finally {
+    await fs.promises.unlink(inFile).catch(() => {});
+    await fs.promises.unlink(outFile).catch(() => {});
+  }
+}
+
 async function runCloudflareFluxImage(
   fullPrompt: string,
   aspectRatio: string,
   accountId: string,
-  apiToken: string
-): Promise<{ imageDataUrl: string; elapsedMs: number; width: number; height: number }> {
+  apiToken: string,
+  referenceImage?: { buffer: Buffer; mimeType: string }
+): Promise<{
+  imageDataUrl: string;
+  modelUsed: string;
+  elapsedMs: number;
+  width: number;
+  height: number;
+}> {
   const started = Date.now();
   const cfDims = CLOUDFLARE_DIMENSIONS_BY_RATIO[aspectRatio] ?? CLOUDFLARE_DIMENSIONS_BY_RATIO['16:9'];
   const isWarmStorybook = fullPrompt.includes('Pro-Mist 1/2');
@@ -823,31 +1260,17 @@ async function runCloudflareFluxImage(
       : ', wide 16:9 landscape cinema composition, expanded full-scene environment';
   const promptText = `${fullPrompt}${ratioCue}`.slice(0, 2000);
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 18000);
-
-  try {
-    const endpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(
-      accountId
-    )}/ai/run/@cf/black-forest-labs/flux-1-schnell`;
-
-    const cfRes = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        prompt: promptText,
-        width: cfDims.w,
-        height: cfDims.h,
-        steps: 4,
-      }),
-      signal: controller.signal,
-    });
-
+  const parseCloudflareResponse = async (
+    cfRes: Response,
+    modelId: string
+  ): Promise<{
+    imageDataUrl: string;
+    modelUsed: string;
+    elapsedMs: number;
+    width: number;
+    height: number;
+  }> => {
     const contentType = cfRes.headers.get('content-type') || '';
-
     if (!cfRes.ok) {
       const errBody = await cfRes.text().catch(() => '');
       const isQuota =
@@ -857,7 +1280,7 @@ async function runCloudflareFluxImage(
       throw new Error(
         isQuota
           ? 'Cloudflare Workers AI daily free limit reached'
-          : `Cloudflare Workers AI returned HTTP ${cfRes.status}${errBody ? `: ${errBody.slice(0, 140)}` : ''}`
+          : `Cloudflare (${modelId}) HTTP ${cfRes.status}${errBody ? `: ${errBody.slice(0, 140)}` : ''}`
       );
     }
 
@@ -866,6 +1289,7 @@ async function runCloudflareFluxImage(
     if (binaryMime && rawBuf.length > 64) {
       return {
         imageDataUrl: `data:${binaryMime};base64,${rawBuf.toString('base64')}`,
+        modelUsed: modelId,
         elapsedMs: Date.now() - started,
         width: cfDims.w,
         height: cfDims.h,
@@ -881,12 +1305,12 @@ async function runCloudflareFluxImage(
     try {
       json = JSON.parse(rawBuf.toString('utf-8')) as typeof json;
     } catch {
-      throw new Error('Unexpected non-image response from Cloudflare Workers AI');
+      throw new Error(`Unexpected non-image response from Cloudflare (${modelId})`);
     }
 
     const rawImage = json.result?.image ?? json.image;
     if (!rawImage || json.success === false) {
-      const errMsg = json.errors?.[0]?.message || 'Empty response from Cloudflare Workers AI';
+      const errMsg = json.errors?.[0]?.message || `Empty response from Cloudflare (${modelId})`;
       throw new Error(errMsg);
     }
 
@@ -895,13 +1319,108 @@ async function runCloudflareFluxImage(
       : `data:${detectBase64ImageMime(rawImage)};base64,${rawImage}`;
     return {
       imageDataUrl,
+      modelUsed: modelId,
       elapsedMs: Date.now() - started,
       width: cfDims.w,
       height: cfDims.h,
     };
-  } finally {
-    clearTimeout(timer);
+  };
+
+  let lastErr = 'Cloudflare Workers AI image models unavailable';
+
+  // 1. Try FLUX.2 models via multipart/form-data (supports explicit width/height + optional input_image_0 reference)
+  const flux2Models: Array<{ id: string; steps: number }> = [
+    { id: '@cf/black-forest-labs/flux-2-dev', steps: 20 },
+    { id: '@cf/black-forest-labs/flux-2-klein-9b', steps: 4 },
+    { id: '@cf/black-forest-labs/flux-2-klein-4b', steps: 4 },
+  ];
+
+  for (const m of flux2Models) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 36000);
+    try {
+      const form = new FormData();
+      form.append('prompt', promptText);
+      form.append('width', String(cfDims.w));
+      form.append('height', String(cfDims.h));
+      form.append('steps', String(m.steps));
+      if (referenceImage) {
+        const ext = referenceImage.mimeType.includes('png') ? 'png' : 'jpg';
+        form.append(
+          'input_image_0',
+          new Blob([new Uint8Array(referenceImage.buffer)], { type: referenceImage.mimeType }),
+          `reference.${ext}`
+        );
+      }
+
+      const endpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(
+        accountId
+      )}/ai/run/${m.id}`;
+      const cfRes = await fetch(endpoint, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiToken}` },
+        body: form,
+        signal: controller.signal,
+      });
+      return await parseCloudflareResponse(cfRes, m.id);
+    } catch (err) {
+      lastErr = err instanceof Error ? err.message : String(err);
+      if (/daily free limit/i.test(lastErr)) throw new Error(lastErr);
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
+  // 2. Try JSON models that support explicit width & height
+  const jsonModels: Array<{ id: string; body: Record<string, unknown> }> = [
+    {
+      id: '@cf/leonardo/lucid-origin',
+      body: { prompt: promptText, width: cfDims.w, height: cfDims.h, steps: 20 },
+    },
+    {
+      id: '@cf/leonardo/phoenix-1.0',
+      body: { prompt: promptText, width: cfDims.w, height: cfDims.h, num_steps: 20 },
+    },
+    {
+      id: '@cf/stabilityai/stable-diffusion-xl-base-1.0',
+      body: { prompt: promptText, width: cfDims.w, height: cfDims.h, num_steps: 20 },
+    },
+  ];
+
+  // flux-1-schnell on Cloudflare strictly outputs 1024x1024 and rejects width/height properties
+  if (aspectRatio === '1:1') {
+    jsonModels.push({
+      id: '@cf/black-forest-labs/flux-1-schnell',
+      body: { prompt: promptText, steps: 8 },
+    });
+  }
+
+  for (const m of jsonModels) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 28000);
+    try {
+      const endpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(
+        accountId
+      )}/ai/run/${m.id}`;
+      const cfRes = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(m.body),
+        signal: controller.signal,
+      });
+      return await parseCloudflareResponse(cfRes, m.id);
+    } catch (err) {
+      lastErr = err instanceof Error ? err.message : String(err);
+      if (/daily free limit/i.test(lastErr)) throw new Error(lastErr);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw new Error(lastErr);
 }
 
 async function runDirectHuggingFaceImage(
@@ -1102,7 +1621,9 @@ async function enhanceCinemaVideoPrompt(options: {
       `1. Expand the user's plain-English camera & acting directions into rich 3D animation direction prompts.`,
       isWarmStorybook
         ? `2. MANDATORY WARM STORYBOOK 3D LOOK: Compose as a ${WARM_STORYBOOK_3D_FRAMING}. Specify soft-focus vintage cinema lens, dreamy halation, warm sunlit bloom, gentle Pro-Mist 1/2 diffusion, low micro-contrast, soft pastel matte clay and felt textures, slightly blurred soft edges, warm overexposed sunlit sky in background, and 35mm film softness. Strictly avoid razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, glossy studio lighting, or close-up portraits.`
-        : `2. Specify cinema depth-of-field, subsurface skin/fur scattering (when animated), expressive facial/eye acting, warm rim lighting, and smooth continuous camera trajectories.`,
+        : style === '3D Pixar-Style Cartoon' || style === '3D Cartoon'
+        ? `2. MANDATORY FEATURE-FILM 3D ANIMATION BENCHMARK: Specify sculpted stylized expressive faces with natural proportions, warm subsurface skin shading with amber bounce light, detailed corneal eye catchlights, sculpted eyebrows/eyelashes/hair braids, PBR fabric weaves and brushed metallic accents, cinematic global illumination, soft ambient occlusion, shallow depth-of-field bokeh, smooth natural body acting, and theatrical color grading (NOT photorealistic, NOT plastic glossy AI skin).`
+        : `2. Specify cinema depth-of-field, expressive facial/eye acting, rich material shaders, warm rim lighting, and smooth continuous camera trajectories.`,
       `3. Keep EVERY detail, action, subject, and angle the user wrote intact — never override or soften their camera trajectory.`,
       refs.length > 0
         ? `4. Treat ALL ${refs.length} uploaded reference image(s) strictly as visual identity, character, outfit, prop, and environment/style references—NEVER copy original framing or background unchanged unless requested. Preserve EVERY character's exact face, hairstyle, skin tone/fur, body proportions, clothing, colors, and signature accessories directly inside the text description.`
@@ -1127,7 +1648,7 @@ async function enhanceCinemaVideoPrompt(options: {
           config: {
             systemInstruction: isWarmStorybook
               ? 'You are a Smart 3D Cinematography & Acting Director specializing in dreamy handcrafted Warm Storybook 3D animation. Always frame shots as wide 16:9 candid full-scene movie frames with foreground and background layers in sunlit environments (never close-up portraits), using soft-focus vintage cinema lenses, Pro-Mist 1/2 halation, low micro-contrast, and soft pastel matte clay/felt textures while strictly avoiding razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, or glossy studio lighting.'
-              : 'You are a Smart 3D Cinematography & Acting Director for AI video generators (Wan 2.1, CogVideoX, LTX-Video). Preserve 100% of the user prompt intent while weaving visual identity details from all reference images into one cohesive prompt.',
+              : 'You are a Smart Feature-Film 3D Cinematography & Acting Director for AI video generators (Wan 2.2, LTX-Video, CogVideoX). Preserve 100% of the user prompt intent while weaving visual identity details from all reference images and theatrical 3D feature animation lighting/material polish into one cohesive prompt.',
             ...(candidate.useThinkingLow
               ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
               : {}),
@@ -1518,6 +2039,7 @@ async function tryGradioImageEndpoint(
   fullPrompt: string,
   dims: { w: number; h: number },
   useSdxl: boolean,
+  aspectRatio = '16:9',
   extraAllowedHost?: string
 ): Promise<{ imageDataUrl: string }> {
   const clientOptions = extraAllowedHost ? undefined : getHfGradioOptions();
@@ -1552,8 +2074,13 @@ async function tryGradioImageEndpoint(
   }
 
   const paramsMeta = epInfo?.parameters ?? [];
+  const isFlux1Dev = target === 'black-forest-labs/FLUX.1-dev';
+  const isQwenImage = /Qwen\/Qwen-Image/i.test(target);
   const isTurboOrSd = target.includes('stable-diffusion-3.5') || target.includes('prodia');
   const isWarmStorybook = fullPrompt.includes('Pro-Mist 1/2');
+  const effectiveDims = isFlux1Dev
+    ? FLUX1_DEV_DIMENSIONS_BY_RATIO[aspectRatio] ?? dims
+    : dims;
   const payload: Record<string, unknown> = {};
 
   for (const p of paramsMeta) {
@@ -1568,17 +2095,21 @@ async function tryGradioImageEndpoint(
     } else if (lower.includes('negative')) {
       payload[name] = isWarmStorybook
         ? WARM_STORYBOOK_3D_NEGATIVE_PROMPT
-        : 'text, watermark, signature, blurry, low quality, artifacts';
+        : 'photorealistic photo, flat 2d cartoon, plastic glossy skin, text, watermark, signature, blurry, stretched, letterbox bars, artifacts';
     } else if (lower === 'randomize_seed') {
       payload[name] = true;
+    } else if (lower === 'aspect_ratio') {
+      payload[name] = aspectRatio === '21:9' ? '16:9' : aspectRatio;
+    } else if (lower === 'prompt_enhance') {
+      payload[name] = true;
     } else if (lower === 'width') {
-      payload[name] = dims.w;
+      payload[name] = effectiveDims.w;
     } else if (lower === 'height') {
-      payload[name] = dims.h;
+      payload[name] = effectiveDims.h;
     } else if (lower === 'num_inference_steps' || lower === 'steps') {
-      payload[name] = isTurboOrSd ? 8 : useSdxl ? 25 : 4;
+      payload[name] = isFlux1Dev ? 28 : isQwenImage ? 36 : isTurboOrSd ? 8 : useSdxl ? 25 : 4;
     } else if (lower === 'guidance_scale' || lower === 'cfg' || lower === 'cfg_scale') {
-      payload[name] = isTurboOrSd ? 1.5 : useSdxl ? 7 : 0;
+      payload[name] = isFlux1Dev ? 3.5 : isQwenImage ? 4 : isTurboOrSd ? 1.5 : useSdxl ? 7 : 0;
     } else if (p.parameter_has_default) {
       payload[name] = p.parameter_default;
     }
@@ -1586,7 +2117,7 @@ async function tryGradioImageEndpoint(
 
   const result = await withTimeout(
     client.predict(endpoint, Object.keys(payload).length > 0 ? payload : [fullPrompt]),
-    32000,
+    isFlux1Dev || isQwenImage ? 45000 : 32000,
     `${nodeLabel} queue timeout reached.`
   );
 
@@ -1768,13 +2299,18 @@ async function enhanceCinemaImagePrompt(options: {
       `USER PROMPT (PRIMARY AUTHORITY — controls scene, environment, actions, pose, camera angle, lighting, and composition): "${trimmedPrompt}"`,
       `Target Output Aspect Ratio: ${aspectRatio}`,
       `Visual Style: ${style}`,
+      style === '3D Pixar-Style Cartoon' || style === '3D Cartoon'
+        ? `Visual Quality Benchmark: ${PREMIUM_3D_ANIMATION_BENCHMARK}`
+        : '',
       `Remove Original Background: ${removeBackground ? 'YES — completely replace original background' : 'NO — seamlessly expand/adapt scene to prompt'}`,
       `RULES:`,
       `1. The uploaded reference image(s) ONLY define character/subject identity and visual appearance (face, hairstyle, skin tone/fur, body proportions, exact clothing, colors, and accessories). NEVER reproduce the reference image unchanged or copy its background/framing.`,
       `2. The USER PROMPT controls 100% of the scene, environment, character actions/pose, camera angle, lighting, and composition.`,
-      `3. Preserve EVERY character's entire body cleanly (head, body, clothing, accessories) properly positioned and proportioned inside the ${aspectRatio} canvas — expand the surrounding environment to fill ${aspectRatio} with zero stretching or cropping.`,
-      `4. If multiple characters (e.g., Milo & Friends) are provided, describe each character's exact look distinctly so none blend together or lose accessories.`,
-    ].join('\n'),
+      `3. Preserve EVERY character's entire body cleanly (head, body, clothing, accessories) properly positioned and proportioned inside the full edge-to-edge ${aspectRatio} canvas — synthesize the full surrounding environment across ${aspectRatio} with zero stretching, zero cropping, and zero blank/blurred side margins.`,
+      `4. Describe each attached character's exact visual identity in rich detail so their face, hair/braids, eyes, skin tone/fur, outfit, and accessories remain faithful.`,
+    ]
+      .filter(Boolean)
+      .join('\n'),
   });
 
   for (const model of ['gemini-4-hydrogen', 'gemini-3.1-flash-lite']) {
@@ -1793,7 +2329,7 @@ async function enhanceCinemaImagePrompt(options: {
                 editPrompt: {
                   type: Type.STRING,
                   description:
-                    '70-110 word prompt for Flux Kontext / Qwen-Image-Edit telling the editor to keep the exact character identity from the input image while posing them in the new scene, camera angle, lighting, and replacing/expanding the background across the full target aspect ratio.',
+                    '70-110 word prompt for Flux Kontext / Flux 2 / Qwen-Image-Edit telling the editor to keep the exact character identity from the input image while posing them in the new scene, camera angle, lighting, and replacing/expanding the background across the full target aspect ratio with no sidebars.',
                 },
                 generationPrompt: {
                   type: Type.STRING,
@@ -1833,6 +2369,7 @@ async function tryReferenceEditSpaces(
   spaceId: string,
   inputImageDataUrl: string,
   editPrompt: string,
+  aspectRatio: string,
   timeoutMs: number
 ): Promise<{ imageDataUrl: string }> {
   const resolved = resolveImageInputToBuffer(inputImageDataUrl);
@@ -1848,7 +2385,20 @@ async function tryReferenceEditSpaces(
 
   let endpoint = '/infer';
   let payload: Record<string, unknown>;
-  if (spaceId === 'Qwen/Qwen-Image-Edit') {
+  if (spaceId === 'black-forest-labs/FLUX.2-dev') {
+    const f2Dims = FLUX2_DIMENSIONS_BY_RATIO[aspectRatio] ?? FLUX2_DIMENSIONS_BY_RATIO['16:9'];
+    payload = {
+      prompt: editPrompt,
+      input_images: [{ image: handle_file(blob) }],
+      seed: 0,
+      randomize_seed: true,
+      width: f2Dims.w,
+      height: f2Dims.h,
+      num_inference_steps: 26,
+      guidance_scale: 4,
+      prompt_upsampling: true,
+    };
+  } else if (spaceId === 'Qwen/Qwen-Image-Edit') {
     payload = {
       image: handle_file(blob),
       prompt: editPrompt,
@@ -1869,11 +2419,29 @@ async function tryReferenceEditSpaces(
     };
   }
 
+  const effectiveTimeout =
+    spaceId === 'black-forest-labs/FLUX.2-dev' ? Math.min(timeoutMs, 28000) : timeoutMs;
+
   const pred = await withTimeout(
     client.predict(endpoint, payload),
-    timeoutMs,
+    effectiveTimeout,
     `${spaceId} inference timed out.`
-  );
+  ).catch(async (firstErr) => {
+    const msg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+    if (/zerogpu|quota|exceeded/i.test(msg) && getHfToken()) {
+      const anonClient = await withTimeout(
+        Client.connect(spaceId),
+        10000,
+        `${spaceId} anonymous connection timed out.`
+      );
+      return await withTimeout(
+        anonClient.predict(endpoint, payload),
+        effectiveTimeout,
+        `${spaceId} inference timed out.`
+      );
+    }
+    throw firstErr;
+  });
   const outUrl = extractGradioMediaUrl(pred.data);
   if (!outUrl) {
     throw new Error(`${spaceId} did not return a valid image URL.`);
@@ -1927,6 +2495,7 @@ async function runResilientImageGeneration(
     ? options.aspectRatio
     : '16:9';
   const dims = IMAGE_DIMENSIONS_BY_RATIO[safeRatio] ?? IMAGE_DIMENSIONS_BY_RATIO['16:9'];
+  const cfDims = CLOUDFLARE_DIMENSIONS_BY_RATIO[safeRatio] ?? CLOUDFLARE_DIMENSIONS_BY_RATIO['16:9'];
   const useSdxl = options.engine === 'sdxl';
 
   const normalizedRefs: NormalizedReferenceInput[] = [];
@@ -1985,6 +2554,25 @@ async function runResilientImageGeneration(
       }
     } catch {
       // Proceed with original reference + prompt-level background replacement
+    }
+  }
+
+  // Always prepare a neutral target-aspect-ratio canvas on server if client did not provide one
+  // and the reference image's native ratio differs from safeRatio (never pass raw 9:16 canvas for 16:9).
+  let contextPreparedCanvasUrl = effectiveInputCanvasUrl;
+  if (normalizedRefs.length > 0 && !options.preparedCanvasDataUrl && effectiveInputCanvasUrl) {
+    const refBufInfo = resolveImageInputToBuffer(effectiveInputCanvasUrl);
+    if (refBufInfo) {
+      const refDims = await getImageBufferDimensionsReliable(refBufInfo.buffer);
+      if (!refDims || !isDimensionsMatchingRatio(refDims.width, refDims.height, safeRatio, 0.03)) {
+        const prepped = await prepareNeutralStudioCanvasServer(
+          refBufInfo.buffer,
+          refBufInfo.mimeType,
+          cfDims.w,
+          cfDims.h
+        );
+        contextPreparedCanvasUrl = `data:${prepped.mimeType};base64,${prepped.buffer.toString('base64')}`;
+      }
     }
   }
 
@@ -2057,25 +2645,31 @@ async function runResilientImageGeneration(
         fullPrompt,
         dims,
         useSdxl,
+        safeRatio,
         validColab.host
       );
+      const verified = await enforceServerImageAspectRatio(
+        resImg.imageDataUrl,
+        safeRatio,
+        fullPrompt
+      );
       return {
-        imageDataUrl: resImg.imageDataUrl,
+        imageDataUrl: verified.imageDataUrl,
         spaceUsed: `colab://${validColab.host}`,
         nodeLabel,
         provider: 'colab-turbo',
         elapsedMs: Date.now() - started,
         translatedPrompt: fullPrompt,
-        width: dims.w,
-        height: dims.h,
+        width: verified.width,
+        height: verified.height,
       };
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
     }
   }
 
-  // When reference images are attached, prioritize pixel-aware reference editors (FLUX.1-Kontext / Qwen-Image-Edit)
-  // using the target aspect-ratio prepared canvas before falling back to text-only Flux/SDXL.
+  // When reference images are attached, prioritize pixel-aware reference editors
+  // (FLUX.1-Kontext / Qwen-Image-Edit / FLUX.2-dev) with strict output ratio verification.
   if (tryRefEdit && effectiveInputCanvasUrl) {
     const editTimeoutMs = process.env.VERCEL ? 22000 : 38000;
     for (const editSpace of REFERENCE_EDIT_SPACES) {
@@ -2093,21 +2687,31 @@ async function runResilientImageGeneration(
         message: `Composing reference character into ${safeRatio} scene...`,
       });
       try {
+        const spaceInputUrl =
+          editSpace === 'black-forest-labs/FLUX.2-dev'
+            ? normalizedRefs[0].imageUrl
+            : contextPreparedCanvasUrl || effectiveInputCanvasUrl;
         const edited = await tryReferenceEditSpaces(
           editSpace,
-          effectiveInputCanvasUrl,
+          spaceInputUrl,
           editPrompt,
+          safeRatio,
           editTimeoutMs
         );
+        const verified = await enforceServerImageAspectRatio(
+          edited.imageDataUrl,
+          safeRatio,
+          editPrompt
+        );
         return {
-          imageDataUrl: edited.imageDataUrl,
+          imageDataUrl: verified.imageDataUrl,
           spaceUsed: editSpace,
           nodeLabel,
           provider: 'huggingface',
           elapsedMs: Date.now() - started,
           translatedPrompt: editPrompt,
-          width: dims.w,
-          height: dims.h,
+          width: verified.width,
+          height: verified.height,
         };
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
@@ -2136,17 +2740,23 @@ async function runResilientImageGeneration(
         fullPrompt,
         safeRatio,
         cfCreds.accountId,
-        cfCreds.apiToken
+        cfCreds.apiToken,
+        normalizedRefs[0] ? { buffer: normalizedRefs[0].buffer, mimeType: normalizedRefs[0].mimeType } : undefined
+      );
+      const verified = await enforceServerImageAspectRatio(
+        cfRes.imageDataUrl,
+        safeRatio,
+        fullPrompt
       );
       return {
-        imageDataUrl: cfRes.imageDataUrl,
-        spaceUsed: '@cf/black-forest-labs/flux-1-schnell',
-        nodeLabel,
+        imageDataUrl: verified.imageDataUrl,
+        spaceUsed: cfRes.modelUsed,
+        nodeLabel: `Cloudflare Workers AI (${cfRes.modelUsed})`,
         provider: 'cloudflare',
         elapsedMs: cfRes.elapsedMs,
         translatedPrompt: fullPrompt,
-        width: cfRes.width,
-        height: cfRes.height,
+        width: verified.width,
+        height: verified.height,
       };
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
@@ -2170,15 +2780,20 @@ async function runResilientImageGeneration(
     });
     try {
       const hfDirect = await runDirectHuggingFaceImage(fullPrompt, dims, useSdxl, hfToken);
+      const verified = await enforceServerImageAspectRatio(
+        hfDirect.imageDataUrl,
+        safeRatio,
+        fullPrompt
+      );
       return {
-        imageDataUrl: hfDirect.imageDataUrl,
+        imageDataUrl: verified.imageDataUrl,
         spaceUsed: hfDirect.modelUsed,
         nodeLabel,
         provider: 'huggingface',
         elapsedMs: hfDirect.elapsedMs,
         translatedPrompt: fullPrompt,
-        width: dims.w,
-        height: dims.h,
+        width: verified.width,
+        height: verified.height,
       };
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
@@ -2207,16 +2822,28 @@ async function runResilientImageGeneration(
     });
 
     try {
-      const resImg = await tryGradioImageEndpoint(candidate, nodeLabel, fullPrompt, dims, useSdxl);
+      const resImg = await tryGradioImageEndpoint(
+        candidate,
+        nodeLabel,
+        fullPrompt,
+        dims,
+        useSdxl,
+        safeRatio
+      );
+      const verified = await enforceServerImageAspectRatio(
+        resImg.imageDataUrl,
+        safeRatio,
+        fullPrompt
+      );
       return {
-        imageDataUrl: resImg.imageDataUrl,
+        imageDataUrl: verified.imageDataUrl,
         spaceUsed: candidate,
         nodeLabel,
         provider: 'huggingface',
         elapsedMs: Date.now() - started,
         translatedPrompt: fullPrompt,
-        width: dims.w,
-        height: dims.h,
+        width: verified.width,
+        height: verified.height,
       };
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
@@ -2425,7 +3052,9 @@ async function generateEpisodeScriptJson(body: Record<string, unknown>): Promise
       `- Automatically assign the right character IDs (assignedCharacterIds), cameraAngle, cameraMotion (one of: Auto, Zoom In, Zoom Out, Pan Left, Pan Right, Orbit, Drone Flyover, Static), lightingMood, dialogueLines, narration, and sfxPresetId (one of: none, sparkle, boing, footsteps, whoosh, nature, fanfare).`,
       safeStyle === 'Warm Storybook 3D'
         ? `- MANDATORY WARM STORYBOOK 3D VISUAL STYLE: Write every visualPrompt as a wide 16:9 candid full-scene movie frame with foreground and background layers where characters interact naturally in sunlit environments (never close-up portraits), featuring soft-focus vintage cinema lens, dreamy halation, warm sunlit bloom, Pro-Mist 1/2 mist diffusion, low micro-contrast, soft pastel matte clay and felt textures, warm overexposed sunlit sky, and 35mm film softness — strictly avoiding razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, or glossy studio lighting.`
-        : `- Write lush 3D animation visualPrompt descriptions specifying subsurface skin/fur scattering, expressive eye movement, warm rim lighting, depth-of-field, and smooth camera paths (no text overlays or watermarks).`,
+        : safeStyle === '3D Pixar-Style Cartoon' || safeStyle === '3D Cartoon'
+        ? `- MANDATORY FEATURE-FILM 3D ANIMATION VISUAL BENCHMARK: Write every visualPrompt in theatrical 3D feature animation quality (${PREMIUM_3D_ANIMATION_BENCHMARK}), specifying consistent character faces, sculpted hair braids/strands, tactile woven textiles, global illumination, soft ambient occlusion, shallow depth-of-field bokeh, and lush layered environments (no text overlays or watermarks).`
+        : `- Write lush animated cinema visualPrompt descriptions specifying rich materials, lighting depth, expressive character acting, depth-of-field, and smooth camera paths (no text overlays or watermarks).`,
     ]
       .filter(Boolean)
       .join('\n\n');
@@ -2837,12 +3466,12 @@ async function generateCharacterSheetJson(body: Record<string, unknown>): Promis
       try {
         const response = await ai.models.generateContent({
           model: candidate.model,
-          contents: `Design an animation character sheet in the "${safeStyle}" style for this concept:\n${concept
+          contents: `Design an animation character sheet in the "${safeStyle}" style (${STYLE_PROMPT_DIRECTIVES[safeStyle] ?? safeStyle}) for this concept:\n${concept
             .trim()
             .slice(0, 1200)}`,
           config: {
             systemInstruction:
-              'You are a lead character designer for animation studios. Produce cohesive character profiles with vivid visual prompts, 3 personality traits, 4 hex colors, and a matching voice preset (one of Kore, Puck, Charon, Fenrir, Zephyr).',
+              'You are a lead character designer for theatrical 3D animation studios. Produce cohesive character profiles with hyper-specific visual appearance prompts (sculpted face proportions, eye/eyebrow/lash details, hair strands/braids, clothing fabric/material textures, signature props), 3 personality traits, 4 hex colors, and a matching voice preset (one of Kore, Puck, Charon, Fenrir, Zephyr).',
             ...(candidate.useThinking ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
             responseMimeType: 'application/json',
             responseSchema: {
@@ -3311,8 +3940,17 @@ async function streamStandardVideo(
     ),
   });
 
-  const shouldUseSingleFrameI2v = Boolean(useExactStartFrame && normalizedRefs.length === 1);
-  const safeMode = shouldUseSingleFrameI2v ? 'image-to-video' : 'text-to-video';
+  const refDims = normalizedRefs[0]
+    ? await getImageBufferDimensionsReliable(normalizedRefs[0].buffer)
+    : null;
+  const refMatchesTargetRatio = Boolean(
+    refDims && isDimensionsMatchingRatio(refDims.width, refDims.height, safeRatio, 0.04)
+  );
+  const shouldUseSingleFrameI2v = Boolean(
+    useExactStartFrame && normalizedRefs.length === 1 && refMatchesTargetRatio
+  );
+  const safeMode =
+    shouldUseSingleFrameI2v || normalizedRefs.length > 0 ? 'image-to-video' : 'text-to-video';
   let activeImageBlob: Blob | null = shouldUseSingleFrameI2v
     ? new Blob([new Uint8Array(normalizedRefs[0].buffer)], { type: normalizedRefs[0].mimeType })
     : null;
@@ -3361,40 +3999,55 @@ async function streamStandardVideo(
   }
 
   const fullPrompt = buildTranslatedVideoPrompt(enhancedPrompt, String(style), safeRatio, safeMotion);
+  const videoTargetDims = VIDEO_DIMENSIONS_BY_RATIO[safeRatio] ?? VIDEO_DIMENSIONS_BY_RATIO['16:9'];
   const queueTimeoutMs = process.env.VERCEL ? 52_000 : 120_000;
   let lastError = 'Live running video Spaces are currently queued.';
 
+  let autoFrameFailed = false;
   const ensureAutoStartingFrame = async (targetNodeLabel: string): Promise<Blob | null> => {
     if (activeImageBlob) return activeImageBlob;
+    if (autoFrameFailed) {
+      throw new Error(lastError || 'Starting scene frame generation unavailable.');
+    }
 
     sendEvent({
       type: 'status',
       progress: 22,
       translatedPrompt: fullPrompt,
-      message: `Awake GPU node (${targetNodeLabel}) requires Image-to-Video — generating a fast starting frame first...`,
+      message:
+        normalizedRefs.length > 0
+          ? `Composing ${safeRatio} scene frame from uploaded reference before animating...`
+          : `Awake GPU node (${targetNodeLabel}) requires Image-to-Video — generating a fast starting frame first...`,
     });
 
-    const startImg = await runResilientImageGeneration({
-      prompt: enhancedPrompt,
-      style: String(style),
-      aspectRatio: safeRatio,
-      engine: 'flux-schnell',
-      colabUrl: typeof colabUrl === 'string' ? colabUrl : undefined,
-      allowGradioFallback: true,
-      removeBackground: normalizedRefs.length > 0,
-      referenceImages:
-        normalizedRefs.length > 0
-          ? normalizedRefs.map((r) => ({
-              imageUrl: r.imageUrl,
-              role: r.role,
-              label: r.label,
-              description: r.description,
-            }))
-          : undefined,
-    });
+    let startImg: ImageGenResult;
+    try {
+      startImg = await runResilientImageGeneration({
+        prompt: enhancedPrompt,
+        style: String(style),
+        aspectRatio: safeRatio,
+        engine: 'flux-schnell',
+        colabUrl: typeof colabUrl === 'string' ? colabUrl : undefined,
+        allowGradioFallback: true,
+        removeBackground: normalizedRefs.length > 0,
+        referenceImages:
+          normalizedRefs.length > 0
+            ? normalizedRefs.map((r) => ({
+                imageUrl: r.imageUrl,
+                role: r.role,
+                label: r.label,
+                description: r.description,
+              }))
+            : undefined,
+      });
+    } catch (err) {
+      autoFrameFailed = true;
+      throw err;
+    }
 
     const resolvedBlob = resolveImageInputToBlob(startImg.imageDataUrl);
     if (!resolvedBlob) {
+      autoFrameFailed = true;
       throw new Error('Could not convert generated starting frame into an image blob.');
     }
     activeImageBlob = resolvedBlob;
@@ -3405,16 +4058,31 @@ async function streamStandardVideo(
       progress: 30,
       imageDataUrl: startImg.imageDataUrl,
       translatedPrompt: fullPrompt,
-      message: `Starting frame ready via ${startImg.nodeLabel} — feeding directly into ${targetNodeLabel}...`,
+      message: `Starting frame (${startImg.width}×${startImg.height}) ready — feeding directly into ${targetNodeLabel}...`,
     });
 
     return activeImageBlob;
   };
 
+  // CRITICAL: When user uploaded reference image(s) that do NOT match safeRatio (e.g., 9:16 ref -> 16:9 video)
+  // or uploaded multiple references, render a verified target-ratio scene frame FIRST before video generation
+  // so no I2V model inherits a 9:16 portrait canvas and T2V nodes never lose the reference character.
+  if (normalizedRefs.length > 0 && !activeImageBlob) {
+    try {
+      await ensureAutoStartingFrame('Video Scene Generator');
+    } catch (preFrameErr) {
+      lastError = preFrameErr instanceof Error ? preFrameErr.message : String(preFrameErr);
+    }
+  }
+
   for (let i = 0; i < nodesToTry.length; i++) {
     const node = nodesToTry[i];
     const started = Date.now();
     try {
+      if (/cogvideo/i.test(node.target) && safeRatio === '9:16') {
+        continue;
+      }
+
       sendEvent({
         type: 'status',
         space: node.displaySpace,
@@ -3489,6 +4157,10 @@ async function streamStandardVideo(
       const endpointIsI2v = /i2v|img2vid|image_to_video/i.test(String(chosenEndpoint));
 
       if (!activeImageBlob && (requiresMandatoryImage || isExplicitI2vSpace || endpointIsI2v)) {
+        if (autoFrameFailed) {
+          lastError = `${node.nodeLabel} requires a starting image (${lastError})`;
+          continue;
+        }
         try {
           await ensureAutoStartingFrame(node.nodeLabel);
           chosenEndpoint = pickEndpointForCurrentFrame(Boolean(activeImageBlob));
@@ -3505,6 +4177,7 @@ async function streamStandardVideo(
       }
 
       const isDistilled = /ltx|fast|turbo|fp8/i.test(node.target);
+      const isWan22 = /wan2[-_.]?2/i.test(node.target);
       const isWarmStorybookVideo = String(style) === 'Warm Storybook 3D';
       const payload: Record<string, unknown> = {};
       let attachedPrimary = false;
@@ -3519,18 +4192,30 @@ async function streamStandardVideo(
             ? WARM_STORYBOOK_3D_NEGATIVE_PROMPT
             : p.parameter_has_default
             ? p.parameter_default
-            : 'text, watermark, signature, blurry, low quality, artifacts';
+            : 'text, watermark, signature, blurry, low quality, stretched, artifacts';
         } else if (lower === 'mode') {
           payload[name] = activeImageBlob ? 'image-to-video' : 'text-to-video';
+        } else if (lower === 'generation_mode') {
+          payload[name] = activeImageBlob ? 'Image-to-Video' : 'Text-to-Video';
+        } else if (lower === 'width_ui' || lower === 'width') {
+          payload[name] = videoTargetDims.w;
+        } else if (lower === 'height_ui' || lower === 'height') {
+          payload[name] = videoTargetDims.h;
         } else if (
           activeImageBlob &&
           !attachedPrimary &&
           !lower.includes('last') &&
           !lower.includes('end') &&
-          (p.component === 'Image' || (lower.includes('image') && p.component !== 'Textbox'))
+          (p.component === 'Image' ||
+            lower === 'first_frame' ||
+            (lower.includes('image') && p.component !== 'Textbox'))
         ) {
           payload[name] = handle_file(activeImageBlob);
           attachedPrimary = true;
+        } else if (isWan22 && lower === 'quality') {
+          payload[name] = 8;
+        } else if (isWan22 && lower === 'steps') {
+          payload[name] = 8;
         } else if (
           (lower === 'num_inference_steps' || lower === 'steps') &&
           isDistilled &&
@@ -3642,9 +4327,14 @@ async function streamStandardVideo(
         continue;
       }
 
-      const mime = vidRes.headers.get('content-type') || 'video/mp4';
-      const buf = Buffer.from(await vidRes.arrayBuffer());
-      const finalVideoUrl = serializeRenderedVideoUrl(buf, mime, videoUrl);
+      const rawMime = vidRes.headers.get('content-type') || 'video/mp4';
+      const rawBuf = Buffer.from(await vidRes.arrayBuffer());
+      const verifiedVideo = await inspectAndNormalizeVideoBuffer(rawBuf, safeRatio);
+      const finalVideoUrl = serializeRenderedVideoUrl(
+        verifiedVideo.buffer,
+        verifiedVideo.mimeType || rawMime,
+        videoUrl
+      );
 
       sendEvent({
         type: 'complete',
@@ -3655,6 +4345,9 @@ async function streamStandardVideo(
         provider: node.provider,
         elapsedMs: Date.now() - started,
         translatedPrompt: fullPrompt,
+        width: verifiedVideo.width,
+        height: verifiedVideo.height,
+        aspectRatio: safeRatio,
         progress: 100,
         mode: effectiveMode,
       });

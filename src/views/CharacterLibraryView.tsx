@@ -29,13 +29,18 @@ interface CharacterLibraryViewProps {
   onToggleCharacterInProject: (characterId: string) => void;
 }
 
-function resizeImageFileToDataUrl(file: File, maxSize = 512): Promise<string> {
+function resizeImageFileToDataUrl(file: File, maxSize = 1200): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
+      const rawUrl = String(reader.result);
       const img = new Image();
       img.onload = () => {
         const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+        if (scale === 1 && rawUrl.length <= 2_500_000) {
+          resolve(rawUrl);
+          return;
+        }
         const w = Math.max(64, Math.round(img.width * scale));
         const h = Math.max(64, Math.round(img.height * scale));
         const canvas = document.createElement('canvas');
@@ -47,7 +52,9 @@ function resizeImageFileToDataUrl(file: File, maxSize = 512): Promise<string> {
           return;
         }
         ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/webp', 0.86));
+        const outputMime =
+          file.type === 'image/png' || file.type === 'image/webp' ? 'image/png' : 'image/jpeg';
+        resolve(canvas.toDataURL(outputMime, 0.95));
       };
       img.onerror = () => reject(new Error('Could not decode uploaded image.'));
       img.src = String(reader.result);

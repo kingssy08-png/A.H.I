@@ -39,7 +39,7 @@ export function doesImageMatchAspectRatio(
   width: number,
   height: number,
   targetRatio: AspectRatio,
-  tolerance = 0.08
+  tolerance = 0.025
 ): boolean {
   if (width <= 0 || height <= 0) return false;
   const dims = getTargetDimensionsForRatio(targetRatio);
@@ -113,7 +113,7 @@ export function getForegroundBounds(img: HTMLImageElement): {
 /**
  * Prepares an exact target aspect-ratio canvas containing ALL uploaded subject references
  * cleanly proportioned and completely uncropped (head, body, clothing, accessories intact)
- * with zero stretching, ready for reference-conditioned image generation & outpainting.
+ * with zero stretching and zero blurred portrait sidebars, ready for full-scene synthesis.
  */
 export async function prepareReferenceCanvasForAspectRatio(
   refs: Array<Pick<VideoReferenceItem, 'imageUrl' | 'role' | 'label'>>,
@@ -139,10 +139,11 @@ export async function prepareReferenceCanvasForAspectRatio(
     };
   }
 
-  // Clean neutral studio backdrop so scene-replacement models seamlessly fill the entire target frame
+  // Clean neutral studio matte so reference-edit / scene-replacement models generate
+  // a seamless edge-to-edge environment across the full target ratio (never blurred sidebars).
   const bgGrad = ctx.createLinearGradient(0, 0, 0, dims.h);
-  bgGrad.addColorStop(0, '#E9EDF2');
-  bgGrad.addColorStop(1, '#DCE2EB');
+  bgGrad.addColorStop(0, '#E8ECF2');
+  bgGrad.addColorStop(1, '#DCE2EC');
   ctx.fillStyle = bgGrad;
   ctx.fillRect(0, 0, dims.w, dims.h);
 
@@ -158,7 +159,7 @@ export async function prepareReferenceCanvasForAspectRatio(
       const bh = bgImg.naturalHeight * bgScale;
       ctx.drawImage(bgImg, (dims.w - bw) / 2, (dims.h - bh) / 2, bw, bh);
     } catch {
-      // Keep neutral studio backdrop
+      // Keep clean neutral studio backdrop
     }
   }
 
@@ -188,31 +189,18 @@ export async function prepareReferenceCanvasForAspectRatio(
     sourceAspectDescription =
       r < 0.8 ? '9:16 portrait' : r > 1.25 ? '16:9 landscape' : '1:1 square';
 
-    // When 1 portrait (9:16) character is placed onto landscape 16:9 without BG removal,
-    // use a softly blurred ambient extension on the sides instead of hard studio edges
-    if (!options?.removeBackground && !sceneRef && loadedSubjects.length === 1) {
-      const fg = loadedSubjects[0];
-      ctx.save();
-      ctx.filter = 'blur(38px) brightness(0.92)';
-      const coverScale = Math.max(dims.w / fg.img.naturalWidth, dims.h / fg.img.naturalHeight);
-      const cw = fg.img.naturalWidth * coverScale;
-      const ch = fg.img.naturalHeight * coverScale;
-      ctx.drawImage(fg.img, (dims.w - cw) / 2, (dims.h - ch) / 2, cw, ch);
-      ctx.restore();
-    }
-
     const count = loadedSubjects.length;
-    const safeTop = Math.round(dims.h * 0.08);
-    const safeBottom = Math.round(dims.h * 0.06);
+    const safeTop = Math.round(dims.h * 0.1);
+    const safeBottom = Math.round(dims.h * 0.08);
     const availHeight = dims.h - safeTop - safeBottom;
-    const horizMargin = Math.round(dims.w * (count === 1 ? 0.14 : 0.06));
+    const horizMargin = Math.round(dims.w * (count === 1 ? 0.16 : 0.06));
     const gap = Math.round(dims.w * 0.03);
     const slotWidth =
       (dims.w - horizMargin * 2 - gap * Math.max(0, count - 1)) / Math.max(1, count);
 
     loadedSubjects.forEach(({ img, bounds }, idx) => {
       // Strictly aspect-preserving contain scaling — zero stretching, zero cropping
-      const maxH = count === 1 ? availHeight * 0.92 : availHeight * 0.86;
+      const maxH = count === 1 ? availHeight * 0.88 : availHeight * 0.84;
       const scale = Math.min(slotWidth / bounds.sw, maxH / bounds.sh);
       const drawW = bounds.sw * scale;
       const drawH = bounds.sh * scale;
@@ -232,9 +220,8 @@ export async function prepareReferenceCanvasForAspectRatio(
 }
 
 /**
- * Safety net if an upstream model still returns a slightly different aspect ratio:
- * expands the surrounding canvas softly to match exact target dimensions without
- * ever stretching or cropping the subject.
+ * Exact target-ratio snapping for images that are already in the matching orientation
+ * (e.g., 1392x752 -> 1280x720) without ever stretching or adding blurred/empty sidebars.
  */
 export async function normalizeImageOutputAspectRatio(
   imageDataUrl: string,
@@ -245,7 +232,15 @@ export async function normalizeImageOutputAspectRatio(
   const natW = img.naturalWidth || dims.w;
   const natH = img.naturalHeight || dims.h;
 
-  if (doesImageMatchAspectRatio(natW, natH, targetRatio, 0.06)) {
+  if (doesImageMatchAspectRatio(natW, natH, targetRatio, 0.01)) {
+    return { imageDataUrl, width: natW, height: natH, wasAdjusted: false };
+  }
+
+  // Only cover-crop minor aspect variance in the same orientation (never crop portrait to landscape)
+  const actualRatio = natW / Math.max(1, natH);
+  const expectedRatio = dims.w / dims.h;
+  const ratioDelta = Math.abs(actualRatio - expectedRatio) / expectedRatio;
+  if (ratioDelta > 0.16) {
     return { imageDataUrl, width: natW, height: natH, wasAdjusted: false };
   }
 
@@ -257,19 +252,11 @@ export async function normalizeImageOutputAspectRatio(
     return { imageDataUrl, width: natW, height: natH, wasAdjusted: false };
   }
 
-  // Softly blurred ambient extension backdrop
-  ctx.save();
-  ctx.filter = 'blur(34px) saturate(1.05)';
   const coverScale = Math.max(dims.w / natW, dims.h / natH);
-  const cw = natW * coverScale * 1.06;
-  const ch = natH * coverScale * 1.06;
-  ctx.drawImage(img, (dims.w - cw) / 2, (dims.h - ch) / 2, cw, ch);
-  ctx.restore();
-
-  // Preserve 100% of the subject uncropped and unstretched in center
-  const containScale = Math.min(dims.w / natW, dims.h / natH);
-  const dw = natW * containScale;
-  const dh = natH * containScale;
+  const dw = natW * coverScale;
+  const dh = natH * coverScale;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(img, (dims.w - dw) / 2, (dims.h - dh) / 2, dw, dh);
 
   return {

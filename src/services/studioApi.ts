@@ -236,18 +236,27 @@ const WARM_STORYBOOK_3D_FRAMING =
 const WARM_STORYBOOK_3D_NEGATIVE_PROMPT =
   'razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, glossy studio lighting, close-up portrait, text, watermark, signature, artifacts';
 
+const PREMIUM_3D_ANIMATION_BENCHMARK =
+  'theatrical feature-film-quality 3D character animation, sculpted stylized character proportions with expressive faces, rich subsurface skin scattering with warm amber bounce light, detailed eyes with crisp eyelashes eyebrows and corneal catchlights, individually sculpted hair strands and braids, woven fabric and physically based metallic/glass surface materials, cinematic global illumination, soft ambient occlusion and rim shadows, rich layered depth-of-field environment, theatrical color grading — strictly avoid live-action photorealism, flat 2D cartoon, or cheap plastic AI look';
+
 const CLIENT_STYLE_CUES: Record<string, string> = {
   'Warm Storybook 3D': `${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}`,
-  '3D Pixar-Style Cartoon':
-    '3D Pixar-style animated feature film aesthetic, subsurface scattering, expressive eyes, warm rim lighting, crisp 35mm depth-of-field',
-  '3D Cartoon': '3D animated cartoon feature aesthetic, vibrant color grading, warm rim highlights',
-  Anime: 'high-budget theatrical anime animation, crisp cel-shaded linework, luminous atmospheric lighting',
-  'Cinematic Film': '35mm anamorphic cinema film look, moody volumetric light, rich contrast',
-  '2D Illustration': 'hand-crafted 2D editorial illustration aesthetic, rich gouache brushwork',
-  'Music Video': 'high-energy stylized music video cinematography, vibrant neon and rim lighting',
-  'Product Ad': 'luxury commercial product studio macro photography, crisp specular highlights',
-  Realistic: 'photorealistic live-action cinema camera aesthetic, natural lens clarity',
-  Educational: 'clean 2.5D motion graphics explainer aesthetic, crisp geometric clarity',
+  '3D Pixar-Style Cartoon': PREMIUM_3D_ANIMATION_BENCHMARK,
+  '3D Cartoon': PREMIUM_3D_ANIMATION_BENCHMARK,
+  Anime:
+    'high-budget theatrical anime feature animation, expressive eyes, crisp cel-shaded linework, luminous atmospheric sky, layered depth, cinematic color grading',
+  'Cinematic Film':
+    '35mm anamorphic cinema film look, moody volumetric global illumination, physically based surface detail, rich contrast, shallow depth-of-field bokeh',
+  '2D Illustration':
+    'hand-crafted 2D feature animation concept illustration, rich gouache brushwork, tactile layered storybook depth',
+  'Music Video':
+    'high-energy stylized music video cinematography, kinetic gimbal choreography, vibrant neon & rim lighting, anamorphic lens flare',
+  'Product Ad':
+    'luxury commercial product studio macro photography, sleek brushed metal & glass PBR specular highlights, obsidian pedestal reflections, shallow depth of field',
+  Realistic:
+    'photorealistic live-action cinema camera aesthetic, physically accurate reflections, natural lens clarity, cinema color grading',
+  Educational:
+    'clean 2.5D educational motion graphics explainer aesthetic, crisp geometric clarity, PBR surface polish, high visual contrast',
 };
 
 const CLIENT_DIMS_BY_RATIO: Record<string, { w: number; h: number }> = {
@@ -255,6 +264,13 @@ const CLIENT_DIMS_BY_RATIO: Record<string, { w: number; h: number }> = {
   '9:16': { w: 720, h: 1280 },
   '1:1': { w: 1024, h: 1024 },
   '21:9': { w: 1344, h: 576 },
+};
+
+const CLIENT_VIDEO_DIMS_BY_RATIO: Record<string, { w: number; h: number }> = {
+  '16:9': { w: 1024, h: 576 },
+  '9:16': { w: 576, h: 1024 },
+  '1:1': { w: 768, h: 768 },
+  '21:9': { w: 896, h: 384 },
 };
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -332,15 +348,19 @@ const HF_BROWSER_BG_REMOVAL_SPACES = [
 const HF_BROWSER_REFERENCE_EDIT_SPACES = [
   'black-forest-labs/FLUX.1-Kontext-dev',
   'Qwen/Qwen-Image-Edit',
+  'black-forest-labs/FLUX.2-dev',
 ];
 
 const HF_BROWSER_FLUX_SPACES = [
+  'black-forest-labs/FLUX.1-dev',
+  'Qwen/Qwen-Image-2512',
   'black-forest-labs/FLUX.1-schnell',
   'stabilityai/stable-diffusion-3.5-large-turbo',
   'prodia/fast-stable-diffusion',
 ];
 
 const HF_BROWSER_SDXL_SPACES = [
+  'black-forest-labs/FLUX.1-dev',
   'stabilityai/stable-diffusion-3.5-large-turbo',
   'black-forest-labs/FLUX.1-schnell',
   'prodia/fast-stable-diffusion',
@@ -446,7 +466,7 @@ async function ensureResultMatchesAspectRatio(
   const currentDims = await getImageDimensions(imageDataUrl);
   if (
     currentDims &&
-    doesImageMatchAspectRatio(currentDims.width, currentDims.height, targetRatio, 0.06)
+    doesImageMatchAspectRatio(currentDims.width, currentDims.height, targetRatio, 0.015)
   ) {
     return {
       imageDataUrl,
@@ -455,7 +475,21 @@ async function ensureResultMatchesAspectRatio(
     };
   }
 
-  // Try AI scene outpainting first so any off-ratio result expands cleanly instead of padding/cropping
+  // If the image is already close in the same orientation, snap cleanly without AI re-paint
+  if (currentDims) {
+    const actualRatio = currentDims.width / Math.max(1, currentDims.height);
+    const expectedRatio = targetDims.w / targetDims.h;
+    if (Math.abs(actualRatio - expectedRatio) / expectedRatio <= 0.12) {
+      const snapped = await normalizeImageOutputAspectRatio(imageDataUrl, targetRatio);
+      return {
+        imageDataUrl: snapped.imageDataUrl,
+        width: snapped.width,
+        height: snapped.height,
+      };
+    }
+  }
+
+  // Otherwise use AI scene outpainting so off-ratio outputs expand cleanly into full-bleed scenery
   try {
     const blob = await dataUrlOrRemoteToBlob(imageDataUrl);
     const client = await withBrowserTimeout(
@@ -469,7 +503,7 @@ async function ensureResultMatchesAspectRatio(
         width: targetDims.w,
         height: targetDims.h,
         overlap_percentage: 10,
-        num_inference_steps: 8,
+        num_inference_steps: 10,
         resize_option: 'Full',
         custom_resize_percentage: 50,
         prompt_input: scenePrompt.slice(0, 380),
@@ -479,26 +513,24 @@ async function ensureResultMatchesAspectRatio(
         overlap_top: true,
         overlap_bottom: true,
       }),
-      34000,
+      38000,
       'Outpaint render timed out.'
     );
     const outUrl = extractBrowserGradioImageUrl(pred.data);
     if (outUrl) {
       const converted = await imageUrlToDataUrl(outUrl).catch(() => outUrl);
       const outDims = await getImageDimensions(converted);
-      if (
-        outDims &&
-        doesImageMatchAspectRatio(outDims.width, outDims.height, targetRatio, 0.08)
-      ) {
+      if (outDims && doesImageMatchAspectRatio(outDims.width, outDims.height, targetRatio, 0.08)) {
+        const snapped = await normalizeImageOutputAspectRatio(converted, targetRatio);
         return {
-          imageDataUrl: converted,
-          width: outDims.width,
-          height: outDims.height,
+          imageDataUrl: snapped.imageDataUrl,
+          width: snapped.width,
+          height: snapped.height,
         };
       }
     }
   } catch {
-    // Fall back to soft ambient canvas expansion (never stretches or crops character)
+    // Outpaint unavailable
   }
 
   const normalized = await normalizeImageOutputAspectRatio(imageDataUrl, targetRatio);
@@ -526,8 +558,8 @@ function buildReferenceScenePrompts(
     .join('; ');
 
   const bgDirective = removeBackground
-    ? 'Completely replace the studio or original background with the prompted environment filling the entire frame.'
-    : 'Generate and expand the prompted environment seamlessly across the full canvas.';
+    ? 'Completely replace the studio or original background with the prompted environment filling the entire frame edge-to-edge (no side bars or studio backdrop).'
+    : 'Generate and expand the prompted environment seamlessly edge-to-edge across the entire canvas (no side bars or empty margins).';
 
   const editPrompt = isWarmStorybook
     ? `Keep the exact character appearance (face, hairstyle, skin tone, body proportions, clothing, colors, accessories) from the input image without cropping or stretching, and place them in this ${aspectRatio} scene: ${prompt.trim()}. ${bgDirective} ${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}`
@@ -535,7 +567,7 @@ function buildReferenceScenePrompts(
 
   const generationPrompt = isWarmStorybook
     ? `${prompt.trim().slice(0, 420)}${refSummary ? `. Character identity: ${refSummary}` : ''}. Full uncropped character(s) properly proportioned inside ${aspectRatio} frame. ${bgDirective} ${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}, no text, no watermark`
-    : `${prompt.trim().slice(0, 520)}${refSummary ? `. Character identity: ${refSummary}` : ''}. Full uncropped character(s) properly proportioned inside ${aspectRatio} composition. ${bgDirective} ${styleCue}, crisp detail, clean framing, no text, no watermark`;
+    : `${prompt.trim().slice(0, 520)}${refSummary ? `. Character identity: ${refSummary}` : ''}. Full uncropped character(s) properly proportioned inside ${aspectRatio} composition. ${bgDirective} ${styleCue}, clean framing, no text, no watermark`;
 
   return { editPrompt, generationPrompt };
 }
@@ -597,6 +629,18 @@ async function generateHfSpaceBrowserFallback(
     } catch {
       refBlob = null;
     }
+    const rawRefBlobs: Blob[] = [];
+    if (payload.referenceImages?.length) {
+      for (const r of payload.referenceImages.slice(0, 4)) {
+        try {
+          rawRefBlobs.push(await dataUrlOrRemoteToBlob(r.imageUrl));
+        } catch {
+          // ignore
+        }
+      }
+    } else if (refBlob) {
+      rawRefBlobs.push(refBlob);
+    }
 
     if (refBlob) {
       for (let i = 0; i < HF_BROWSER_REFERENCE_EDIT_SPACES.length; i++) {
@@ -617,32 +661,54 @@ async function generateHfSpaceBrowserFallback(
         try {
           const client = await withBrowserTimeout(
             Client.connect(spaceId),
-            15000,
+            14000,
             `${spaceId} WebSocket connection timed out.`
           );
-          const args =
-            spaceId === 'Qwen/Qwen-Image-Edit'
-              ? {
-                  image: handle_file(refBlob),
-                  prompt: editPrompt,
-                  seed: 0,
-                  randomize_seed: true,
-                  true_guidance_scale: 4,
-                  num_inference_steps: 28,
-                  rewrite_prompt: true,
-                }
-              : {
-                  input_image: handle_file(refBlob),
-                  prompt: editPrompt,
-                  seed: 0,
-                  randomize_seed: true,
-                  guidance_scale: 3.5,
-                  steps: 24,
-                };
+          let args: Record<string, unknown>;
+          if (spaceId === 'black-forest-labs/FLUX.2-dev') {
+            const f2Dims =
+              targetRatio === '9:16'
+                ? { w: 576, h: 1024 }
+                : targetRatio === '1:1'
+                ? { w: 1024, h: 1024 }
+                : targetRatio === '21:9'
+                ? { w: 1008, h: 432 }
+                : { w: 1024, h: 576 };
+            args = {
+              prompt: editPrompt,
+              input_images: rawRefBlobs.map((b) => ({ image: handle_file(b) })),
+              seed: 0,
+              randomize_seed: true,
+              width: f2Dims.w,
+              height: f2Dims.h,
+              num_inference_steps: 28,
+              guidance_scale: 4,
+              prompt_upsampling: true,
+            };
+          } else if (spaceId === 'Qwen/Qwen-Image-Edit') {
+            args = {
+              image: handle_file(refBlob),
+              prompt: editPrompt,
+              seed: 0,
+              randomize_seed: true,
+              true_guidance_scale: 4,
+              num_inference_steps: 28,
+              rewrite_prompt: true,
+            };
+          } else {
+            args = {
+              input_image: handle_file(refBlob),
+              prompt: editPrompt,
+              seed: 0,
+              randomize_seed: true,
+              guidance_scale: 3.5,
+              steps: 24,
+            };
+          }
 
           const predResult = await withBrowserTimeout(
             client.predict('/infer', args),
-            44000,
+            36000,
             `${spaceId} GPU queue timeout reached.`
           );
           const mediaUrl = extractBrowserGradioImageUrl(predResult.data);
@@ -654,6 +720,9 @@ async function generateHfSpaceBrowserFallback(
             targetRatio,
             editPrompt
           );
+          if (!doesImageMatchAspectRatio(normalized.width, normalized.height, targetRatio, 0.08)) {
+            continue;
+          }
           const finalPayload = {
             imageDataUrl: normalized.imageDataUrl,
             imageUrl: normalized.imageDataUrl,
@@ -674,7 +743,7 @@ async function generateHfSpaceBrowserFallback(
     }
   }
 
-  // 2. Fallback to fast Flux.1 / SD 3.5 Turbo Spaces with exact target aspect-ratio dims
+  // 2. Fallback to Flux.1-dev / Qwen-Image / Flux.1-schnell / SD 3.5 Turbo Spaces with exact target aspect-ratio dims
   const useSdxl = payload.engine === 'sdxl';
   const baseSpaces = useSdxl ? HF_BROWSER_SDXL_SPACES : HF_BROWSER_FLUX_SPACES;
   const customSpace =
@@ -703,7 +772,7 @@ async function generateHfSpaceBrowserFallback(
     try {
       const client = await withBrowserTimeout(
         Client.connect(spaceId),
-        15000,
+        14000,
         `${spaceId} WebSocket connection timed out.`
       );
       const api = await withBrowserTimeout(
@@ -726,6 +795,17 @@ async function generateHfSpaceBrowserFallback(
 
       const isSd35OrProdia =
         spaceId.includes('stable-diffusion-3.5') || spaceId.includes('prodia');
+      const isFlux1Dev = spaceId === 'black-forest-labs/FLUX.1-dev';
+      const isQwenImage = spaceId.startsWith('Qwen/Qwen-Image');
+      const spaceDims = isFlux1Dev
+        ? targetRatio === '9:16'
+          ? { w: 864, h: 1536 }
+          : targetRatio === '1:1'
+          ? { w: 1024, h: 1024 }
+          : targetRatio === '21:9'
+          ? { w: 1344, h: 576 }
+          : { w: 1536, h: 864 }
+        : dims;
       const gradioPayload: Record<string, unknown> = {};
 
       for (const p of paramsMeta) {
@@ -740,17 +820,19 @@ async function generateHfSpaceBrowserFallback(
         } else if (lower.includes('negative')) {
           gradioPayload[name] = isWarmStorybook
             ? WARM_STORYBOOK_3D_NEGATIVE_PROMPT
-            : 'text, watermark, signature, blurry, low quality, artifacts';
+            : 'photorealistic photography, flat 2d cartoon, plastic glossy skin, stretched anatomy, blurry face, text, watermark, signature';
         } else if (lower === 'randomize_seed') {
           gradioPayload[name] = true;
+        } else if (lower === 'aspect_ratio') {
+          gradioPayload[name] = targetRatio === '21:9' ? '16:9' : targetRatio;
         } else if (lower === 'width') {
-          gradioPayload[name] = dims.w;
+          gradioPayload[name] = spaceDims.w;
         } else if (lower === 'height') {
-          gradioPayload[name] = dims.h;
+          gradioPayload[name] = spaceDims.h;
         } else if (lower === 'num_inference_steps' || lower === 'steps') {
-          gradioPayload[name] = isSd35OrProdia ? 8 : 4;
+          gradioPayload[name] = isQwenImage ? 36 : isFlux1Dev ? 28 : isSd35OrProdia ? 8 : 4;
         } else if (lower === 'guidance_scale' || lower === 'cfg' || lower === 'cfg_scale') {
-          gradioPayload[name] = isSd35OrProdia ? 1.5 : 0;
+          gradioPayload[name] = isQwenImage ? 4 : isFlux1Dev ? 3.5 : isSd35OrProdia ? 1.5 : 0;
         } else if (p.parameter_has_default) {
           gradioPayload[name] = p.parameter_default;
         }
@@ -761,7 +843,7 @@ async function generateHfSpaceBrowserFallback(
           endpoint,
           Object.keys(gradioPayload).length > 0 ? gradioPayload : [generationPrompt]
         ),
-        42000,
+        38000,
         `${spaceId} GPU queue timeout reached.`
       );
 
@@ -790,17 +872,22 @@ async function generateHfSpaceBrowserFallback(
         }
       }
 
+      const normalized = await ensureResultMatchesAspectRatio(
+        imageDataUrl,
+        targetRatio,
+        generationPrompt
+      );
       const elapsedMs = Date.now() - started;
       const finalPayload = {
-        imageDataUrl,
-        imageUrl: imageDataUrl,
+        imageDataUrl: normalized.imageDataUrl,
+        imageUrl: normalized.imageDataUrl,
         spaceUsed: spaceId,
         nodeLabel,
         provider: 'huggingface' as const,
         elapsedMs,
         translatedPrompt: generationPrompt,
-        width: dims.w,
-        height: dims.h,
+        width: normalized.width,
+        height: normalized.height,
       };
       onProgress?.({
         type: 'complete',
@@ -1367,6 +1454,7 @@ async function generateHfVideoBrowserFallback(
     prompt: string;
     mode: 'text-to-video' | 'image-to-video';
     imageDataUrl?: string;
+    animateExactFrame?: boolean;
     referenceImages?: Array<Pick<VideoReferenceItem, 'imageUrl' | 'role' | 'label' | 'description'>>;
     style: AnimationStyle;
     aspectRatio?: AspectRatio;
@@ -1386,6 +1474,8 @@ async function generateHfVideoBrowserFallback(
   mode: 'text-to-video' | 'image-to-video' | 'lipsync';
 }> {
   const started = Date.now();
+  const targetRatio: AspectRatio = payload.aspectRatio ?? '16:9';
+  const videoDims = CLIENT_VIDEO_DIMS_BY_RATIO[targetRatio] ?? { w: 1024, h: 576 };
   const isWarmStorybook = payload.style === 'Warm Storybook 3D';
   const styleCue = CLIENT_STYLE_CUES[payload.style] ?? `${payload.style} aesthetic`;
   const motionCue =
@@ -1398,13 +1488,27 @@ async function generateHfVideoBrowserFallback(
 
   const initialImageUrl =
     payload.imageDataUrl || payload.referenceImages?.[0]?.imageUrl || undefined;
-  let activeImageBlob: Blob | null = initialImageUrl
+  let canReuseExactFrame = false;
+  if (
+    initialImageUrl &&
+    payload.animateExactFrame &&
+    (!payload.referenceImages || payload.referenceImages.length <= 1)
+  ) {
+    const imgDims = await getImageDimensions(initialImageUrl);
+    if (imgDims && doesImageMatchAspectRatio(imgDims.width, imgDims.height, targetRatio, 0.04)) {
+      canReuseExactFrame = true;
+    }
+  }
+
+  let activeImageBlob: Blob | null = canReuseExactFrame && initialImageUrl
     ? await dataUrlOrRemoteToBlob(initialImageUrl).catch(() => null)
     : null;
   let autoGeneratedStartFrameUrl: string | undefined;
 
   const liveSpaces = await discoverBrowserRunningVideoSpaces(
-    activeImageBlob ? 'image-to-video' : payload.mode
+    activeImageBlob || (payload.referenceImages && payload.referenceImages.length > 0) || initialImageUrl
+      ? 'image-to-video'
+      : payload.mode
   );
   const customSpace =
     typeof payload.spaceId === 'string' && /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(payload.spaceId.trim())
@@ -1422,18 +1526,18 @@ async function generateHfVideoBrowserFallback(
       type: 'status',
       progress: 24,
       translatedPrompt: fullPrompt,
-      message: `Awake GPU Space (${targetSpace}) uses Image-to-Video — generating a fast starting frame first...`,
+      message: `Generating ${targetRatio} scene starting frame first...`,
     });
     const generated = await generateHfImage(
       {
         prompt: payload.prompt,
         style: payload.style,
-        aspectRatio: payload.aspectRatio ?? '16:9',
+        aspectRatio: targetRatio,
         engine: 'flux-schnell',
         colabUrl: payload.colabUrl,
         imageDataUrl: payload.imageDataUrl,
         referenceImages: payload.referenceImages,
-        removeBackground: Boolean(payload.referenceImages && payload.referenceImages.length > 0),
+        removeBackground: Boolean(initialImageUrl || (payload.referenceImages && payload.referenceImages.length > 0)),
       },
       onProgress
     );
@@ -1487,6 +1591,16 @@ async function generateHfVideoBrowserFallback(
         /wan2[-_.]?[12]|i2v|img2vid|image-to-video/i.test(spaceId) &&
         !/t2v|text-to-video/i.test(spaceId);
 
+      // CogVideoX only produces fixed 720x480 landscape; skip it if portrait 9:16 is requested
+      if (isCogVideoSpace && targetRatio === '9:16') {
+        lastError = `${spaceId} only renders landscape frames`;
+        continue;
+      }
+
+      const hasAnyImageIntent = Boolean(
+        activeImageBlob || initialImageUrl || (payload.referenceImages && payload.referenceImages.length > 0)
+      );
+
       const pickEndpoint = (hasFrame: boolean): string | number => {
         if (hasFrame) {
           const m = candidateEntries.find(([k]) => /i2v|img2vid|image_to_video|image/i.test(k));
@@ -1519,7 +1633,7 @@ async function generateHfVideoBrowserFallback(
         );
       const endpointIsI2v = /i2v|img2vid|image_to_video/i.test(String(endpoint));
 
-      if (!activeImageBlob && (requiresMandatoryImage || isExplicitI2vSpace || endpointIsI2v)) {
+      if (!activeImageBlob && (hasAnyImageIntent || requiresMandatoryImage || isExplicitI2vSpace || endpointIsI2v)) {
         await ensureStartFrame(spaceId);
         endpoint = pickEndpoint(true);
         epInfo =
@@ -1532,6 +1646,7 @@ async function generateHfVideoBrowserFallback(
       const gradioPayload: Record<string, unknown> = {};
       let attachedImage = false;
       const isDistilled = /ltx|fast|turbo|fp8/i.test(spaceId);
+      const isWan22V3 = /wan2-2-i2v-v3/i.test(spaceId);
       for (const p of paramsMeta) {
         const name = p.parameter_name;
         if (!name) continue;
@@ -1541,20 +1656,29 @@ async function generateHfVideoBrowserFallback(
         } else if (lower.includes('negative')) {
           gradioPayload[name] = isWarmStorybook
             ? WARM_STORYBOOK_3D_NEGATIVE_PROMPT
-            : p.parameter_has_default
-            ? p.parameter_default
-            : 'text, watermark, signature, blurry, low quality, artifacts';
+            : 'photorealistic photography, flat 2d cartoon, plastic glossy skin, blurry face, text, watermark, signature, artifacts';
         } else if (lower === 'mode') {
           gradioPayload[name] = activeImageBlob ? 'image-to-video' : 'text-to-video';
+        } else if (lower === 'generation_mode') {
+          gradioPayload[name] = activeImageBlob ? 'Image-to-Video' : 'Text-to-Video';
+        } else if (lower === 'width' || lower === 'width_ui') {
+          gradioPayload[name] = videoDims.w;
+        } else if (lower === 'height' || lower === 'height_ui') {
+          gradioPayload[name] = videoDims.h;
         } else if (
           activeImageBlob &&
           !attachedImage &&
           !lower.includes('last') &&
           !lower.includes('end') &&
-          (p.component === 'Image' || (lower.includes('image') && p.component !== 'Textbox'))
+          (p.component === 'Image' ||
+            ((lower.includes('image') || lower.includes('first_frame')) && p.component !== 'Textbox'))
         ) {
           gradioPayload[name] = handle_file(activeImageBlob);
           attachedImage = true;
+        } else if (isWan22V3 && lower === 'quality') {
+          gradioPayload[name] = 8;
+        } else if (isWan22V3 && lower === 'steps') {
+          gradioPayload[name] = 8;
         } else if (
           (lower === 'num_inference_steps' || lower === 'steps') &&
           isDistilled &&
