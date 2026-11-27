@@ -108,6 +108,7 @@ const SDXL_SPACES = [
 ];
 const VIDEO_SPACES_T2V = [
   'Lightricks/ltx-video-distilled',
+  'Lightricks/LTX-2-3',
   'alexnasa/ltx-2-TURBO',
   'DeepRat/LTX-Video-ZeroGPU-Optimized',
   'zai-org/CogVideoX-5B-Space',
@@ -119,6 +120,8 @@ const VIDEO_SPACES_I2V = [
   'zerogpu-aoti/wan2-2-fp8da-aoti-faster',
   'r3gm/wan2-2-fp8da-aoti-preview',
   'r3gm/wan2-2-fp8da-aoti-preview2',
+  'Lightricks/LTX-2-3',
+  'wank3r/minimax-h3',
   'multimodalart/wan2-1-fast',
   'ysharma/wan2-1-fast',
   'Lightricks/ltx-video-distilled',
@@ -583,7 +586,13 @@ async function discoverRunningImageSpaces(useSdxl: boolean): Promise<string[]> {
       const id = String(item.id ?? '');
       if (!id || !SPACE_ID_RE.test(id)) return;
       if (item.sdk !== 'gradio' || item.runtime?.stage !== 'RUNNING') return;
-      if (/video|i2v|t2v|upscaler|lora|trainer|angles|multiple-angles|pose|depth|canny|controlnet/i.test(id)) return;
+      if (
+        /video|i2v|t2v|upscaler|lora|trainer|angles|multiple-angles|pose|depth|canny|controlnet|edit|inpaint|outpaint|kontext|rembg|remove/i.test(
+          id
+        )
+      ) {
+        return;
+      }
       const idx = curated.indexOf(id);
       const likes = typeof item.likes === 'number' ? item.likes : 0;
       const prev = discoveredMap.get(id);
@@ -2074,6 +2083,16 @@ async function tryGradioImageEndpoint(
   }
 
   const paramsMeta = epInfo?.parameters ?? [];
+  const requiresImageInput = paramsMeta.some(
+    (p) =>
+      !p.parameter_has_default &&
+      ((p.component && /image/i.test(String(p.component))) ||
+        (p.parameter_name && /input_image|first_frame|image_path|image/i.test(p.parameter_name)))
+  );
+  if (requiresImageInput) {
+    throw new Error(`${nodeLabel} requires an input image.`);
+  }
+
   const isFlux1Dev = target === 'black-forest-labs/FLUX.1-dev';
   const isQwenImage = /Qwen\/Qwen-Image/i.test(target);
   const isTurboOrSd = target.includes('stable-diffusion-3.5') || target.includes('prodia');
@@ -2085,7 +2104,7 @@ async function tryGradioImageEndpoint(
 
   for (const p of paramsMeta) {
     const name = p.parameter_name;
-    if (!name) continue;
+    if (!name || name === 'null') continue;
     const lower = name.toLowerCase();
     if (
       (lower === 'prompt' || lower === 'positive_prompt' || lower === 'text') &&
@@ -2112,6 +2131,8 @@ async function tryGradioImageEndpoint(
       payload[name] = isFlux1Dev ? 3.5 : isQwenImage ? 4 : isTurboOrSd ? 1.5 : useSdxl ? 7 : 0;
     } else if (p.parameter_has_default) {
       payload[name] = p.parameter_default;
+    } else {
+      payload[name] = null;
     }
   }
 
@@ -4112,7 +4133,9 @@ async function streamStandardVideo(
         `${node.nodeLabel} API schema timed out.`
       );
 
-      const namedEntries = Object.entries(api.named_endpoints ?? {});
+      const namedEntries = Object.entries(api.named_endpoints ?? {}).filter(
+        ([k]) => !/^\/?(_|handle_|update_|extract_|fit_|on_)/i.test(k)
+      );
       const videoEndpoints = namedEntries.filter(([, ep]) =>
         (ep?.returns ?? []).some((r) => /video/i.test(String(r.component)))
       );
@@ -4120,16 +4143,18 @@ async function streamStandardVideo(
 
       const isCogVideoSpace = /cogvideo/i.test(node.target);
       const isExplicitI2vSpace =
-        /wan2[-_.]?[12]|i2v|img2vid|image-to-video/i.test(node.target) &&
+        /wan2[-_.]?[12]|i2v|img2vid|image-to-video|minimax/i.test(node.target) &&
         !/t2v|text-to-video/i.test(node.target);
 
       const pickEndpointForCurrentFrame = (hasFrame: boolean): string | number => {
         if (hasFrame) {
-          const i2vMatch = candidateEntries.find(([k]) => /i2v|img2vid|image_to_video|image/i.test(k));
+          const i2vMatch = candidateEntries.find(([k]) =>
+            /i2v|img2vid|image_to_video|generate_video|generate/i.test(k)
+          );
           if (i2vMatch) return i2vMatch[0];
         } else {
           const t2vMatch = candidateEntries.find(([k]) =>
-            /t2v|txt2vid|text_to_video|text|generate|predict|infer/i.test(k)
+            /t2v|txt2vid|text_to_video|generate|predict|infer/i.test(k)
           );
           if (t2vMatch) return t2vMatch[0];
         }
@@ -4143,16 +4168,23 @@ async function streamStandardVideo(
           : api.unnamed_endpoints?.[0];
       let paramsMeta = epInfo?.parameters ?? [];
 
-      const requiresMandatoryImage =
-        !isCogVideoSpace &&
-        paramsMeta.some(
-          (p) =>
-            (p.component === 'Image' ||
-              (p.parameter_name?.toLowerCase().includes('image') &&
-                !p.parameter_name?.toLowerCase().includes('last') &&
-                !p.parameter_name?.toLowerCase().includes('end'))) &&
-            !p.parameter_has_default
+      const isPrimaryImageParam = (p: (typeof paramsMeta)[number]): boolean => {
+        const lower = (p.parameter_name ?? '').toLowerCase();
+        if (lower.includes('last') || lower.includes('end')) return false;
+        const comp = String(p.component ?? '').toLowerCase();
+        return (
+          comp === 'image' ||
+          lower === 'first_frame' ||
+          lower === 'image_path' ||
+          lower === 'input_image' ||
+          lower === 'input_image_filepath' ||
+          lower === 'image_input' ||
+          (lower.includes('image') && comp !== 'textbox')
         );
+      };
+
+      const requiresMandatoryImage =
+        !isCogVideoSpace && paramsMeta.some((p) => !p.parameter_has_default && isPrimaryImageParam(p));
 
       const endpointIsI2v = /i2v|img2vid|image_to_video/i.test(String(chosenEndpoint));
 
@@ -4176,58 +4208,84 @@ async function streamStandardVideo(
         }
       }
 
+      const stillRequiresPrimaryImage = paramsMeta.some(
+        (p) => !p.parameter_has_default && isPrimaryImageParam(p)
+      );
+      if (!activeImageBlob && stillRequiresPrimaryImage) {
+        lastError = `${node.nodeLabel} requires an input_image starting frame.`;
+        continue;
+      }
+
       const isDistilled = /ltx|fast|turbo|fp8/i.test(node.target);
       const isWan22 = /wan2[-_.]?2/i.test(node.target);
       const isWarmStorybookVideo = String(style) === 'Warm Storybook 3D';
-      const payload: Record<string, unknown> = {};
+      const needsPositional = paramsMeta.some((p) => !p.parameter_name || p.parameter_name === 'null');
+
       let attachedPrimary = false;
-      for (const p of paramsMeta) {
-        const name = p.parameter_name;
-        if (!name) continue;
+      const resolveParamValue = (p: (typeof paramsMeta)[number]): unknown => {
+        const name = p.parameter_name ?? '';
         const lower = name.toLowerCase();
         if (lower.includes('prompt') && !lower.includes('negative')) {
-          payload[name] = fullPrompt;
-        } else if (lower.includes('negative')) {
-          payload[name] = isWarmStorybookVideo
+          return fullPrompt;
+        }
+        if (lower.includes('negative')) {
+          return isWarmStorybookVideo
             ? WARM_STORYBOOK_3D_NEGATIVE_PROMPT
             : p.parameter_has_default
             ? p.parameter_default
             : 'text, watermark, signature, blurry, low quality, stretched, artifacts';
-        } else if (lower === 'mode') {
-          payload[name] = activeImageBlob ? 'image-to-video' : 'text-to-video';
-        } else if (lower === 'generation_mode') {
-          payload[name] = activeImageBlob ? 'Image-to-Video' : 'Text-to-Video';
-        } else if (lower === 'width_ui' || lower === 'width') {
-          payload[name] = videoTargetDims.w;
-        } else if (lower === 'height_ui' || lower === 'height') {
-          payload[name] = videoTargetDims.h;
-        } else if (
-          activeImageBlob &&
-          !attachedPrimary &&
-          !lower.includes('last') &&
-          !lower.includes('end') &&
-          (p.component === 'Image' ||
-            lower === 'first_frame' ||
-            (lower.includes('image') && p.component !== 'Textbox'))
-        ) {
-          payload[name] = handle_file(activeImageBlob);
+        }
+        if (lower === 'mode') {
+          return activeImageBlob ? 'image-to-video' : 'text-to-video';
+        }
+        if (lower === 'generation_mode') {
+          return activeImageBlob ? 'Image-to-Video' : 'Text-to-Video';
+        }
+        if (lower === 'width_ui' || lower === 'width') {
+          return videoTargetDims.w;
+        }
+        if (lower === 'height_ui' || lower === 'height') {
+          return videoTargetDims.h;
+        }
+        if (activeImageBlob && !attachedPrimary && isPrimaryImageParam(p)) {
           attachedPrimary = true;
-        } else if (isWan22 && lower === 'quality') {
-          payload[name] = 8;
-        } else if (isWan22 && lower === 'steps') {
-          payload[name] = 8;
-        } else if (
+          return handle_file(activeImageBlob);
+        }
+        if (isWan22 && lower === 'quality') {
+          return 8;
+        }
+        if (isWan22 && lower === 'steps') {
+          return 8;
+        }
+        if (
           (lower === 'num_inference_steps' || lower === 'steps') &&
           isDistilled &&
           !p.parameter_has_default
         ) {
-          payload[name] = 8;
-        } else if ((lower === 'duration' || lower === 'seconds') && !p.parameter_has_default) {
-          payload[name] = 3;
-        } else if (p.parameter_has_default) {
-          payload[name] = p.parameter_default;
+          return 8;
         }
-      }
+        if ((lower === 'duration' || lower === 'seconds') && !p.parameter_has_default) {
+          return 3;
+        }
+        if (p.parameter_has_default) {
+          return p.parameter_default;
+        }
+        return null;
+      };
+
+      const positionalValues = paramsMeta.map((p) => resolveParamValue(p));
+      const namedPayload: Record<string, unknown> = {};
+      paramsMeta.forEach((p, idx) => {
+        if (p.parameter_name && p.parameter_name !== 'null') {
+          namedPayload[p.parameter_name] = positionalValues[idx];
+        }
+      });
+
+      const submitArgs: unknown[] | Record<string, unknown> = needsPositional
+        ? positionalValues
+        : Object.keys(namedPayload).length > 0
+        ? namedPayload
+        : [fullPrompt];
 
       const effectiveMode: 'text-to-video' | 'image-to-video' = activeImageBlob
         ? 'image-to-video'
@@ -4251,57 +4309,85 @@ async function streamStandardVideo(
             : `Connected to ${node.nodeLabel} · Submitting clip...`,
       });
 
-      const job = client.submit(chosenEndpoint, Object.keys(payload).length > 0 ? payload : [fullPrompt]);
-
-      let videoUrl: string | null = null;
-      const jobStart = Date.now();
-      for await (const msg of job) {
-        if (Date.now() - jobStart > queueTimeoutMs && !videoUrl) {
-          lastError = `${node.nodeLabel} queue wait exceeded ${Math.round(queueTimeoutMs / 1000)}s limit.`;
-          break;
-        }
-        if (msg.type === 'status') {
-          const queueInfo =
-            typeof msg.position === 'number' ? `Queue #${msg.position + 1}` : msg.stage;
-          const etaInfo =
-            typeof msg.eta === 'number' && msg.eta > 0 ? ` · Est. ${Math.round(msg.eta)}s` : '';
-          const pct =
-            msg.stage === 'generating'
-              ? 68
-              : typeof msg.position === 'number'
-              ? Math.max(36, 58 - Math.min(20, msg.position * 2))
-              : 48;
-
-          sendEvent({
-            type: 'status',
-            space: node.displaySpace,
-            nodeLabel: node.nodeLabel,
-            provider: node.provider,
-            attempt: i + 1,
-            totalAttempts: nodesToTry.length,
-            progress: pct,
-            queuePosition: msg.position,
-            eta: msg.eta,
-            translatedPrompt: fullPrompt,
-            message: `Connected to ${node.nodeLabel} · ${queueInfo}${etaInfo}`,
-          });
-
-          if (msg.stage === 'error') {
-            lastError =
-              typeof msg.message === 'string'
-                ? msg.message
-                : Array.isArray(msg.message)
-                ? msg.message.map((e: { message?: string }) => e.message).join('; ')
-                : `${node.nodeLabel} reported an error.`;
+      const runSubmitJob = async (activeClient: Client): Promise<{ videoUrl: string | null; errMsg: string | null }> => {
+        const job = activeClient.submit(chosenEndpoint, submitArgs, null, null, true);
+        let foundUrl: string | null = null;
+        let errMsg: string | null = null;
+        const jobStart = Date.now();
+        for await (const msg of job) {
+          if (Date.now() - jobStart > queueTimeoutMs && !foundUrl) {
+            errMsg = `${node.nodeLabel} queue wait exceeded ${Math.round(queueTimeoutMs / 1000)}s limit.`;
             break;
           }
-        } else if (msg.type === 'data') {
-          videoUrl = extractGradioMediaUrl(msg.data, node.extraAllowedHost);
-          if (videoUrl) break;
+          if (msg.type === 'status') {
+            const queueInfo =
+              typeof msg.position === 'number' ? `Queue #${msg.position + 1}` : msg.stage;
+            const etaInfo =
+              typeof msg.eta === 'number' && msg.eta > 0 ? ` · Est. ${Math.round(msg.eta)}s` : '';
+            const pct =
+              msg.stage === 'generating'
+                ? 68
+                : typeof msg.position === 'number'
+                ? Math.max(36, 58 - Math.min(20, msg.position * 2))
+                : 48;
+
+            sendEvent({
+              type: 'status',
+              space: node.displaySpace,
+              nodeLabel: node.nodeLabel,
+              provider: node.provider,
+              attempt: i + 1,
+              totalAttempts: nodesToTry.length,
+              progress: pct,
+              queuePosition: msg.position,
+              eta: msg.eta,
+              translatedPrompt: fullPrompt,
+              message: `Connected to ${node.nodeLabel} · ${queueInfo}${etaInfo}`,
+            });
+
+            if (msg.stage === 'error') {
+              errMsg =
+                typeof msg.message === 'string'
+                  ? msg.message
+                  : Array.isArray(msg.message)
+                  ? msg.message.map((e: { message?: string }) => e.message).join('; ')
+                  : `${node.nodeLabel} reported an error.`;
+              break;
+            }
+          } else if (msg.type === 'data') {
+            foundUrl = extractGradioMediaUrl(msg.data, node.extraAllowedHost);
+            if (foundUrl) break;
+          }
+        }
+        return { videoUrl: foundUrl, errMsg };
+      };
+
+      let { videoUrl, errMsg } = await runSubmitJob(client);
+      if (
+        !videoUrl &&
+        errMsg &&
+        /zerogpu|quota|exceeded/i.test(errMsg) &&
+        node.provider === 'huggingface' &&
+        getHfToken()
+      ) {
+        try {
+          const anonClient = await withTimeout(
+            Client.connect(node.target),
+            12000,
+            `${node.nodeLabel} anonymous connection timed out.`
+          );
+          const anonRes = await runSubmitJob(anonClient);
+          videoUrl = anonRes.videoUrl;
+          errMsg = anonRes.errMsg;
+        } catch (anonErr) {
+          errMsg = anonErr instanceof Error ? anonErr.message : errMsg;
         }
       }
 
-      if (!videoUrl) continue;
+      if (!videoUrl) {
+        if (errMsg) lastError = errMsg;
+        continue;
+      }
 
       sendEvent({
         type: 'status',
