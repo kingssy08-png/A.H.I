@@ -40,16 +40,11 @@ export function FreeGpuStatusCard({
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
           )}
           <span className="font-medium truncate">
-            {message || 'Connecting to free community GPU...'}
+            {message || 'Creating your clip...'}
           </span>
         </div>
 
         <div className="flex items-center gap-2 shrink-0 font-mono text-[11px] tabular-nums text-cyan-300">
-          {attempt && totalAttempts ? (
-            <span className="text-zinc-400">
-              Node {attempt}/{totalAttempts}
-            </span>
-          ) : null}
           {isRunning && clampedProgress > 0 && <span>{clampedProgress}%</span>}
         </div>
       </div>
@@ -66,9 +61,8 @@ export function FreeGpuStatusCard({
       <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400">
         <span className="inline-flex items-center gap-1.5">
           <Cpu className="w-3 h-3 text-cyan-400 shrink-0" />
-          A.H.I routes automatically across instant Workers AI, distilled HF GPUs, or Colab Turbo — zero cost, zero watermarks.
+          A.H.I Cinema Pipeline — zero cost, zero watermarks.
         </span>
-        {activeSpace && <span className="font-mono text-indigo-300">{activeSpace}</span>}
       </div>
 
       {translatedPrompt && (

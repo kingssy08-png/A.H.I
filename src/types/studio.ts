@@ -11,6 +11,7 @@ export type StudioView =
 
 export type AnimationStyle =
   | 'Warm Storybook 3D'
+  | 'Enchanted Storybook'
   | '3D Pixar-Style Cartoon'
   | 'Anime'
   | 'Cinematic Film'
@@ -22,6 +23,8 @@ export type AnimationStyle =
   | 'Educational';
 
 export type AspectRatio = '16:9' | '9:16' | '1:1' | '21:9';
+
+export type ImageQualityTier = 'standard' | 'high' | 'ultra';
 
 export type CameraMotion =
   | 'Auto'

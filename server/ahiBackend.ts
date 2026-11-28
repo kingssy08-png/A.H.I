@@ -15,6 +15,7 @@ const execFileAsync = promisify(execFile);
 
 const ALLOWED_STYLES = [
   'Warm Storybook 3D',
+  'Enchanted Storybook',
   '3D Pixar-Style Cartoon',
   'Anime',
   'Cinematic Film',
@@ -27,6 +28,9 @@ const ALLOWED_STYLES = [
 ] as const;
 
 const ALLOWED_RATIOS = ['16:9', '9:16', '1:1', '21:9'] as const;
+const ALLOWED_QUALITIES = ['standard', 'high', 'ultra'] as const;
+type ImageQualityTier = (typeof ALLOWED_QUALITIES)[number];
+
 const ALLOWED_CAMERA_MOTIONS = [
   'Auto',
   'Zoom In',
@@ -44,6 +48,30 @@ const IMAGE_DIMENSIONS_BY_RATIO: Record<string, { w: number; h: number }> = {
   '9:16': { w: 720, h: 1280 },
   '1:1': { w: 1024, h: 1024 },
   '21:9': { w: 1344, h: 576 },
+};
+
+const QUALITY_DIMENSIONS_BY_TIER: Record<
+  ImageQualityTier,
+  Record<string, { w: number; h: number }>
+> = {
+  standard: {
+    '16:9': { w: 1024, h: 576 },
+    '9:16': { w: 576, h: 1024 },
+    '1:1': { w: 768, h: 768 },
+    '21:9': { w: 1008, h: 432 },
+  },
+  high: {
+    '16:9': { w: 1280, h: 720 },
+    '9:16': { w: 720, h: 1280 },
+    '1:1': { w: 1024, h: 1024 },
+    '21:9': { w: 1344, h: 576 },
+  },
+  ultra: {
+    '16:9': { w: 1536, h: 864 },
+    '9:16': { w: 864, h: 1536 },
+    '1:1': { w: 1024, h: 1024 },
+    '21:9': { w: 1344, h: 576 },
+  },
 };
 
 const CLOUDFLARE_DIMENSIONS_BY_RATIO: Record<string, { w: number; h: number }> = {
@@ -83,9 +111,10 @@ const SVG_VIEWBOX_BY_RATIO: Record<string, { w: number; h: number }> = {
 
 const SPACE_ID_RE = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
 const FLUX_SPACES = [
+  'black-forest-labs/FLUX.2-klein-9B',
+  'black-forest-labs/FLUX.1-schnell',
   'black-forest-labs/FLUX.1-dev',
   'Qwen/Qwen-Image-2512',
-  'black-forest-labs/FLUX.1-schnell',
   'stabilityai/stable-diffusion-3.5-large-turbo',
   'prodia/fast-stable-diffusion',
 ];
@@ -95,11 +124,13 @@ const BACKGROUND_REMOVAL_SPACES = [
   'ZhengPeng7/BiRefNet_demo',
 ];
 const REFERENCE_EDIT_SPACES = [
+  'black-forest-labs/FLUX.2-klein-9B',
   'black-forest-labs/FLUX.1-Kontext-dev',
   'Qwen/Qwen-Image-Edit',
   'black-forest-labs/FLUX.2-dev',
 ];
 const SDXL_SPACES = [
+  'black-forest-labs/FLUX.2-klein-9B',
   'Qwen/Qwen-Image-2512',
   'stabilityai/stable-diffusion-3.5-large-turbo',
   'prodia/fast-stable-diffusion',
@@ -175,11 +206,15 @@ const WARM_STORYBOOK_3D_FRAMING =
 const WARM_STORYBOOK_3D_NEGATIVE_PROMPT =
   'razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, glossy studio lighting, close-up portrait, text, watermark, signature, artifacts';
 
+const ENCHANTED_STORYBOOK_DIRECTIVES =
+  'enchanted fairy-tale animated storybook atmosphere, golden volumetric sunbeams filtering diagonally through mossy ancient trees, glowing floating dust motes and warm fireflies drifting softly in the air, lush botanical foreground framed with wildflowers, curled ferns, and woodland mushrooms, soft atmospheric depth-of-field haze, warm painterly brushwork blended with rich theatrical 3D cinema depth, luminous golden-hour rim light and cozy woodland magic—no text, no watermark';
+
 const PREMIUM_3D_ANIMATION_BENCHMARK =
-  'theatrical feature-film-quality 3D character animation benchmark, sculpted stylized expressive faces with natural anatomical proportions, warm subsurface skin shading with amber bounce light, detailed irises with corneal catchlights, individually sculpted eyebrows, eyelashes, lips, and detailed hair strands/braids, woven textile and subtle brushed metallic PBR surface shaders, cinematic global illumination, soft ambient occlusion, shallow depth-of-field bokeh, rich environment depth and theatrical color grading—not photorealism, not flat cartoon, not glossy plastic AI skin';
+  'theatrical feature-film-quality 3D animated movie frame, beautifully sculpted stylized characters with natural proportions, expressive faces, detailed irises with corneal catchlights, individually sculpted eyebrows and eyelashes, realistic hair strands/braids and tactile fur textures, warm subsurface skin shading with amber bounce light, tactile woven fabrics and subtle brushed metal PBR surface shaders, physically based global illumination, soft ambient occlusion, natural grounded contact shadows, rich atmospheric environments with realistic depth perspective and shallow depth-of-field bokeh, professional cinematic color grading—strictly avoid flat 2D cartoon, avoid low-poly models, avoid blurry textures, avoid photorealistic uncanny valleys, avoid glossy plastic AI skin';
 
 const STYLE_PROMPT_DIRECTIVES: Record<string, string> = {
   'Warm Storybook 3D': `${WARM_STORYBOOK_3D_FRAMING}, ${WARM_STORYBOOK_3D_MODIFIERS}`,
+  'Enchanted Storybook': ENCHANTED_STORYBOOK_DIRECTIVES,
   '3D Pixar-Style Cartoon': PREMIUM_3D_ANIMATION_BENCHMARK,
   '3D Cartoon': PREMIUM_3D_ANIMATION_BENCHMARK,
   Anime:
@@ -239,6 +274,31 @@ const TALKING_VOICE_MAP: Record<
 
 function getNodeLabel(space: string): string {
   return SPACE_NODE_LABELS[space] ?? space;
+}
+
+function formatModelDisplayLabel(modelId: string): string {
+  const lower = modelId.toLowerCase();
+  if (lower.includes('flux-2-dev') || lower.includes('flux.2-dev')) return 'Flux.2 Dev';
+  if (lower.includes('flux-2-klein-9b') || lower.includes('flux.2-klein-9b')) return 'Flux.2 Klein 9B';
+  if (lower.includes('flux-2-klein-4b') || lower.includes('flux.2-klein-4b')) return 'Flux.2 Klein 4B';
+  if (lower.includes('flux.1-dev') || lower.includes('flux-1-dev')) return 'Flux.1 Dev';
+  if (lower.includes('flux-1-schnell') || lower.includes('flux.1-schnell')) return 'Flux.1 Schnell';
+  if (lower.includes('kontext')) return 'Flux.1 Kontext';
+  if (lower.includes('qwen-image')) return 'Qwen Image';
+  if (lower.includes('lucid-origin')) return 'Lucid Origin';
+  if (lower.includes('phoenix')) return 'Phoenix 1.0';
+  if (lower.includes('stable-diffusion-3.5') || lower.includes('sd3.5')) return 'SD 3.5 Turbo';
+  if (lower.includes('stable-diffusion-3')) return 'SD3 Medium';
+  if (lower.includes('stable-diffusion-xl') || lower.includes('sdxl')) return 'SDXL 1.0';
+  if (lower.includes('dreamshaper')) return 'DreamShaper';
+  if (lower.includes('deliberate')) return 'Deliberate';
+  if (lower.includes('aam xl')) return 'AAM XL';
+  if (lower.includes('hassaku')) return 'Hassaku XL';
+  if (lower.includes('526mix')) return '526Mix Animated';
+  if (lower.includes('camelliamix')) return 'CamelliaMix 2.5D';
+  if (lower.includes('comic-diffusion')) return 'Comic Diffusion';
+  if (lower.includes('stable_diffusion')) return 'Stable Diffusion';
+  return 'A.H.I Render Engine';
 }
 
 function getHfToken(): `hf_${string}` | undefined {
@@ -975,7 +1035,7 @@ async function snapImageBufferWithFfmpeg(
       '-i',
       inFile,
       '-vf',
-      `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH}`,
+      `scale=${targetW}:${targetH}:flags=lanczos:force_original_aspect_ratio=increase,crop=${targetW}:${targetH}`,
       '-frames:v',
       '1',
       outFile,
@@ -1037,6 +1097,75 @@ async function prepareNeutralStudioCanvasServer(
   return { buffer: buf, mimeType };
 }
 
+async function composeGuaranteedFallbackSceneFrame(options: {
+  aspectRatio: string;
+  referenceBuffer?: Buffer;
+  referenceMimeType?: string;
+}): Promise<string> {
+  const targetDims =
+    options.aspectRatio === '9:16'
+      ? { w: 720, h: 1280 }
+      : options.aspectRatio === '1:1'
+      ? { w: 1024, h: 1024 }
+      : options.aspectRatio === '21:9'
+      ? { w: 1344, h: 576 }
+      : { w: 1280, h: 720 };
+
+  const id = crypto.randomUUID();
+  const outFile = path.join(os.tmpdir(), `ahi-t3-frame-${id}.png`);
+  let inFile: string | null = null;
+  try {
+    if (options.referenceBuffer) {
+      const mime = options.referenceMimeType || 'image/png';
+      const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+      inFile = path.join(os.tmpdir(), `ahi-t3-ref-${id}.${ext}`);
+      await fs.promises.writeFile(inFile, options.referenceBuffer);
+      const fgMaxW = Math.round(targetDims.w * 0.94);
+      const fgMaxH = Math.round(targetDims.h * 0.94);
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-i',
+        inFile,
+        '-filter_complex',
+        `[0:v]scale=${targetDims.w}:${targetDims.h}:force_original_aspect_ratio=increase,crop=${targetDims.w}:${targetDims.h},gblur=sigma=32,eq=brightness=-0.08:saturation=1.15[bg];[0:v]scale=${fgMaxW}:${fgMaxH}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2`,
+        '-frames:v',
+        '1',
+        outFile,
+      ]);
+    } else {
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        `gradients=s=${targetDims.w}x${targetDims.h}:c0=#0F172A:c1=#1E293B:c2=#134E4A:c3=#312E81:d=1:speed=0`,
+        '-frames:v',
+        '1',
+        outFile,
+      ]).catch(async () => {
+        await execFileAsync('ffmpeg', [
+          '-y',
+          '-f',
+          'lavfi',
+          '-i',
+          `color=c=#0F172A:s=${targetDims.w}x${targetDims.h}:d=1`,
+          '-frames:v',
+          '1',
+          outFile,
+        ]);
+      });
+    }
+    const buf = await fs.promises.readFile(outFile);
+    if (buf.length > 128) {
+      return `data:image/png;base64,${buf.toString('base64')}`;
+    }
+  } finally {
+    if (inFile) await fs.promises.unlink(inFile).catch(() => {});
+    await fs.promises.unlink(outFile).catch(() => {});
+  }
+  throw new Error('Could not prepare fallback scene frame.');
+}
+
 async function outpaintBufferWithHfSpace(
   buf: Buffer,
   mimeType: string,
@@ -1091,19 +1220,31 @@ async function outpaintBufferWithHfSpace(
 async function enforceServerImageAspectRatio(
   imageDataUrl: string,
   aspectRatio: string,
-  prompt: string
+  prompt: string,
+  targetOverrideDims?: { w: number; h: number }
 ): Promise<{ imageDataUrl: string; width: number; height: number }> {
   const resolved = resolveImageInputToBuffer(imageDataUrl);
   if (!resolved) {
     throw new Error('Could not decode generated image buffer.');
   }
-  const targetDims = IMAGE_DIMENSIONS_BY_RATIO[aspectRatio] ?? IMAGE_DIMENSIONS_BY_RATIO['16:9'];
+  const targetDims =
+    targetOverrideDims ?? IMAGE_DIMENSIONS_BY_RATIO[aspectRatio] ?? IMAGE_DIMENSIONS_BY_RATIO['16:9'];
   const actualDims = await getImageBufferDimensionsReliable(resolved.buffer);
   if (!actualDims) {
     return { imageDataUrl, width: targetDims.w, height: targetDims.h };
   }
 
   if (isDimensionsMatchingRatio(actualDims.width, actualDims.height, aspectRatio, 0.015)) {
+    if (actualDims.width < targetDims.w * 0.9 || actualDims.height < targetDims.h * 0.9) {
+      const upscaled = await snapImageBufferWithFfmpeg(resolved.buffer, targetDims.w, targetDims.h);
+      if (upscaled) {
+        return {
+          imageDataUrl: `data:${upscaled.mimeType};base64,${upscaled.buffer.toString('base64')}`,
+          width: upscaled.width,
+          height: upscaled.height,
+        };
+      }
+    }
     return { imageDataUrl, width: actualDims.width, height: actualDims.height };
   }
 
@@ -1131,7 +1272,10 @@ async function enforceServerImageAspectRatio(
     prompt
   );
   if (outpainted && isDimensionsMatchingRatio(outpainted.width, outpainted.height, aspectRatio, 0.08)) {
-    if (!isDimensionsMatchingRatio(outpainted.width, outpainted.height, aspectRatio, 0.015)) {
+    if (
+      !isDimensionsMatchingRatio(outpainted.width, outpainted.height, aspectRatio, 0.015) ||
+      outpainted.width < targetDims.w * 0.9
+    ) {
       const snapped = await snapImageBufferWithFfmpeg(outpainted.buffer, targetDims.w, targetDims.h);
       if (snapped) {
         return {
@@ -1241,12 +1385,213 @@ async function inspectAndNormalizeVideoBuffer(
   }
 }
 
+async function tryHuggingFaceInferenceRouterVideo(options: {
+  prompt: string;
+  aspectRatio: string;
+  hfToken: string;
+  startImageBuffer?: Buffer;
+  startImageMime?: string;
+}): Promise<{ buffer: Buffer; mimeType: string; width: number; height: number; modelUsed: string } | null> {
+  const { prompt, aspectRatio, hfToken, startImageBuffer, startImageMime } = options;
+  const targetDims = VIDEO_DIMENSIONS_BY_RATIO[aspectRatio] ?? VIDEO_DIMENSIONS_BY_RATIO['16:9'];
+  const models = startImageBuffer
+    ? ['Wan-AI/Wan2.2-I2V-A14B', 'Wan-AI/Wan2.1-I2V-14B-480P', 'Lightricks/LTX-Video']
+    : ['Wan-AI/Wan2.2-T2V-A14B', 'Lightricks/LTX-Video', 'zai-org/CogVideoX-5b'];
+
+  for (const modelId of models) {
+    const endpoints = [`https://router.huggingface.co/hf-inference/models/${modelId}`];
+    for (const url of endpoints) {
+      for (let retry = 0; retry < 2; retry++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 22000);
+        try {
+          const payloadBody = startImageBuffer
+            ? JSON.stringify({
+                inputs: `data:${startImageMime || 'image/png'};base64,${startImageBuffer.toString('base64')}`,
+                parameters: {
+                  prompt: prompt.slice(0, 1200),
+                  width: targetDims.w,
+                  height: targetDims.h,
+                  num_frames: 49,
+                },
+                options: { wait_for_model: true },
+              })
+            : JSON.stringify({
+                inputs: prompt.slice(0, 1200),
+                parameters: {
+                  width: targetDims.w,
+                  height: targetDims.h,
+                  num_frames: 49,
+                },
+                options: { wait_for_model: true },
+              });
+
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${hfToken}`,
+              'Content-Type': 'application/json',
+              Accept: 'video/mp4',
+            },
+            body: payloadBody,
+            signal: controller.signal,
+          });
+
+          if (res.status === 503 && retry === 0) {
+            await new Promise((r) => setTimeout(r, 1500));
+            continue;
+          }
+          if (!res.ok) {
+            break;
+          }
+
+          const ct = (res.headers.get('content-type') || '').toLowerCase();
+          const rawBuf = Buffer.from(await res.arrayBuffer());
+          const looksLikeVideo =
+            ct.startsWith('video/') ||
+            ct.includes('octet-stream') ||
+            (rawBuf.length > 4096 && rawBuf.subarray(4, 8).toString('ascii') === 'ftyp');
+          if (!looksLikeVideo) {
+            break;
+          }
+
+          const verified = await inspectAndNormalizeVideoBuffer(rawBuf, aspectRatio);
+          return {
+            buffer: verified.buffer,
+            mimeType: verified.mimeType || 'video/mp4',
+            width: verified.width,
+            height: verified.height,
+            modelUsed: modelId,
+          };
+        } catch {
+          if (retry === 0) continue;
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function renderServerCinemaMotionMp4(options: {
+  imageDataUrl: string;
+  aspectRatio: string;
+  cameraMotion?: string;
+  audioDataUrl?: string;
+  durationSeconds?: number;
+}): Promise<{ buffer: Buffer; mimeType: string; width: number; height: number }> {
+  const resolvedImg = resolveImageInputToBuffer(options.imageDataUrl);
+  if (!resolvedImg) {
+    throw new Error('Could not decode scene image for motion compilation.');
+  }
+
+  const targetDims =
+    options.aspectRatio === '9:16'
+      ? { w: 720, h: 1280 }
+      : options.aspectRatio === '1:1'
+      ? { w: 1024, h: 1024 }
+      : options.aspectRatio === '21:9'
+      ? { w: 1344, h: 576 }
+      : { w: 1280, h: 720 };
+
+  const durationSec = Math.max(3, Math.min(8, options.durationSeconds ?? 5));
+  const fps = 24;
+  const totalFrames = Math.round(durationSec * fps);
+  const id = crypto.randomUUID();
+  const imgExt = resolvedImg.mimeType.includes('png')
+    ? 'png'
+    : resolvedImg.mimeType.includes('webp')
+    ? 'webp'
+    : 'jpg';
+  const imgFile = path.join(os.tmpdir(), `ahi-cm-in-${id}.${imgExt}`);
+  const outFile = path.join(os.tmpdir(), `ahi-cm-out-${id}.mp4`);
+  let audioFile: string | null = null;
+
+  try {
+    await fs.promises.writeFile(imgFile, resolvedImg.buffer);
+
+    if (options.audioDataUrl) {
+      const audioBlob = resolveAudioBase64ToBlob(options.audioDataUrl);
+      if (audioBlob) {
+        audioFile = path.join(os.tmpdir(), `ahi-cm-aud-${id}.wav`);
+        await fs.promises.writeFile(audioFile, Buffer.from(await audioBlob.arrayBuffer()));
+      }
+    }
+
+    const motion = options.cameraMotion || 'Slow Dolly In';
+    const upW = targetDims.w * 2;
+    const upH = targetDims.h * 2;
+    let zoomExpr = `1.0+0.10*on/${totalFrames}`;
+    let xExpr = `iw/2-(iw/zoom/2)`;
+    let yExpr = `ih/2-(ih/zoom/2)`;
+
+    if (motion === 'Slow Dolly Out') {
+      zoomExpr = `1.12-0.10*on/${totalFrames}`;
+    } else if (motion === 'Pan Left') {
+      zoomExpr = `1.10`;
+      xExpr = `(iw-iw/zoom)*(1-on/${totalFrames})`;
+    } else if (motion === 'Pan Right') {
+      zoomExpr = `1.10`;
+      xExpr = `(iw-iw/zoom)*(on/${totalFrames})`;
+    } else if (motion === 'Crane Up') {
+      zoomExpr = `1.08`;
+      yExpr = `(ih-ih/zoom)*(1-on/${totalFrames})`;
+    }
+
+    const vf = [
+      `scale=${upW}:${upH}:force_original_aspect_ratio=increase`,
+      `crop=${upW}:${upH}`,
+      `zoompan=z='${zoomExpr}':x='${xExpr}':y='${yExpr}':d=${totalFrames}:fps=${fps}:s=${targetDims.w}x${targetDims.h}`,
+    ].join(',');
+
+    const args = [
+      '-y',
+      '-loop',
+      '1',
+      '-i',
+      imgFile,
+      ...(audioFile ? ['-i', audioFile] : []),
+      '-vf',
+      vf,
+      '-t',
+      String(durationSec),
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '20',
+      '-pix_fmt',
+      'yuv420p',
+      ...(audioFile ? ['-c:a', 'aac', '-b:a', '128k', '-shortest'] : []),
+      '-movflags',
+      '+faststart',
+      outFile,
+    ];
+
+    await execFileAsync('ffmpeg', args);
+    const outBuf = await fs.promises.readFile(outFile);
+    return {
+      buffer: outBuf,
+      mimeType: 'video/mp4',
+      width: targetDims.w,
+      height: targetDims.h,
+    };
+  } finally {
+    await fs.promises.unlink(imgFile).catch(() => {});
+    await fs.promises.unlink(outFile).catch(() => {});
+    if (audioFile) await fs.promises.unlink(audioFile).catch(() => {});
+  }
+}
+
 async function runCloudflareFluxImage(
   fullPrompt: string,
   aspectRatio: string,
   accountId: string,
   apiToken: string,
-  referenceImage?: { buffer: Buffer; mimeType: string }
+  referenceImage?: { buffer: Buffer; mimeType: string },
+  quality: ImageQualityTier = 'high'
 ): Promise<{
   imageDataUrl: string;
   modelUsed: string;
@@ -1338,22 +1683,38 @@ async function runCloudflareFluxImage(
   let lastErr = 'Cloudflare Workers AI image models unavailable';
 
   // 1. Try FLUX.2 models via multipart/form-data (supports explicit width/height + optional input_image_0 reference)
-  const flux2Models: Array<{ id: string; steps: number }> = [
-    { id: '@cf/black-forest-labs/flux-2-dev', steps: 20 },
-    { id: '@cf/black-forest-labs/flux-2-klein-9b', steps: 4 },
-    { id: '@cf/black-forest-labs/flux-2-klein-4b', steps: 4 },
-  ];
+  const flux2Models: Array<{ id: string; steps: number; timeoutMs: number }> =
+    quality === 'standard'
+      ? [
+          { id: '@cf/black-forest-labs/flux-2-klein-9b', steps: 4, timeoutMs: 28000 },
+          { id: '@cf/black-forest-labs/flux-2-klein-4b', steps: 4, timeoutMs: 25000 },
+          { id: '@cf/black-forest-labs/flux-2-dev', steps: 8, timeoutMs: 45000 },
+        ]
+      : quality === 'ultra'
+      ? [
+          { id: '@cf/black-forest-labs/flux-2-dev', steps: 22, timeoutMs: 75000 },
+          { id: '@cf/black-forest-labs/flux-2-klein-9b', steps: 8, timeoutMs: 32000 },
+          { id: '@cf/black-forest-labs/flux-2-klein-4b', steps: 6, timeoutMs: 28000 },
+        ]
+      : [
+          { id: '@cf/black-forest-labs/flux-2-dev', steps: 12, timeoutMs: 65000 },
+          { id: '@cf/black-forest-labs/flux-2-klein-9b', steps: 4, timeoutMs: 28000 },
+          { id: '@cf/black-forest-labs/flux-2-klein-4b', steps: 4, timeoutMs: 28000 },
+        ];
 
-  for (const m of flux2Models) {
+  const runFlux2Attempt = async (
+    m: { id: string; steps: number; timeoutMs: number },
+    withRef: boolean
+  ) => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 36000);
+    const timer = setTimeout(() => controller.abort(), m.timeoutMs);
     try {
       const form = new FormData();
       form.append('prompt', promptText);
       form.append('width', String(cfDims.w));
       form.append('height', String(cfDims.h));
       form.append('steps', String(m.steps));
-      if (referenceImage) {
+      if (withRef && referenceImage) {
         const ext = referenceImage.mimeType.includes('png') ? 'png' : 'jpg';
         form.append(
           'input_image_0',
@@ -1372,27 +1733,44 @@ async function runCloudflareFluxImage(
         signal: controller.signal,
       });
       return await parseCloudflareResponse(cfRes, m.id);
-    } catch (err) {
-      lastErr = err instanceof Error ? err.message : String(err);
-      if (/daily free limit/i.test(lastErr)) throw new Error(lastErr);
     } finally {
       clearTimeout(timer);
+    }
+  };
+
+  for (const m of flux2Models) {
+    try {
+      return await runFlux2Attempt(m, Boolean(referenceImage));
+    } catch (err) {
+      lastErr = err instanceof Error ? err.message : String(err);
+      console.warn(`[CloudflareFlux] ${m.id} (ref=${Boolean(referenceImage)}) failed: ${lastErr}`);
+      if (/daily free limit/i.test(lastErr)) throw new Error(lastErr);
+      if (referenceImage) {
+        try {
+          return await runFlux2Attempt(m, false);
+        } catch (retryErr) {
+          lastErr = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          console.warn(`[CloudflareFlux] ${m.id} (text-only retry) failed: ${lastErr}`);
+          if (/daily free limit/i.test(lastErr)) throw new Error(lastErr);
+        }
+      }
     }
   }
 
   // 2. Try JSON models that support explicit width & height
+  const jsonSteps = quality === 'ultra' ? 24 : quality === 'standard' ? 12 : 20;
   const jsonModels: Array<{ id: string; body: Record<string, unknown> }> = [
     {
       id: '@cf/leonardo/lucid-origin',
-      body: { prompt: promptText, width: cfDims.w, height: cfDims.h, steps: 20 },
+      body: { prompt: promptText, width: cfDims.w, height: cfDims.h, steps: jsonSteps },
     },
     {
       id: '@cf/leonardo/phoenix-1.0',
-      body: { prompt: promptText, width: cfDims.w, height: cfDims.h, num_steps: 20 },
+      body: { prompt: promptText, width: cfDims.w, height: cfDims.h, num_steps: jsonSteps },
     },
     {
       id: '@cf/stabilityai/stable-diffusion-xl-base-1.0',
-      body: { prompt: promptText, width: cfDims.w, height: cfDims.h, num_steps: 20 },
+      body: { prompt: promptText, width: cfDims.w, height: cfDims.h, num_steps: jsonSteps },
     },
   ];
 
@@ -1400,13 +1778,13 @@ async function runCloudflareFluxImage(
   if (aspectRatio === '1:1') {
     jsonModels.push({
       id: '@cf/black-forest-labs/flux-1-schnell',
-      body: { prompt: promptText, steps: 8 },
+      body: { prompt: promptText, steps: quality === 'standard' ? 4 : 8 },
     });
   }
 
   for (const m of jsonModels) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 28000);
+    const timer = setTimeout(() => controller.abort(), 30000);
     try {
       const endpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(
         accountId
@@ -1423,6 +1801,7 @@ async function runCloudflareFluxImage(
       return await parseCloudflareResponse(cfRes, m.id);
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
+      console.warn(`[CloudflareJson] ${m.id} failed: ${lastErr}`);
       if (/daily free limit/i.test(lastErr)) throw new Error(lastErr);
     } finally {
       clearTimeout(timer);
@@ -1435,66 +1814,67 @@ async function runCloudflareFluxImage(
 async function runDirectHuggingFaceImage(
   fullPrompt: string,
   dims: { w: number; h: number },
-  useSdxl: boolean,
+  _useSdxl: boolean,
   hfToken: string
 ): Promise<{ imageDataUrl: string; modelUsed: string; elapsedMs: number }> {
   const started = Date.now();
-  const models = useSdxl
-    ? ['stabilityai/stable-diffusion-xl-base-1.0', 'black-forest-labs/FLUX.1-schnell']
-    : ['black-forest-labs/FLUX.1-schnell', 'stabilityai/stable-diffusion-xl-base-1.0'];
+  // Active models supported on HF Inference Router (hf-inference)
+  const models = [
+    'stabilityai/stable-diffusion-3-medium-diffusers',
+  ];
+
+  // Clamp SD3 dims cleanly to multiples of 64 within 1024px budget
+  const round64 = (n: number) => Math.max(512, Math.min(1024, Math.round(n / 64) * 64));
+  const reqW = round64(dims.w);
+  const reqH = round64(dims.h);
 
   let lastErr = 'Hugging Face Inference API unavailable';
   for (const modelId of models) {
-    const endpoints = [
-      `https://router.huggingface.co/hf-inference/models/${modelId}`,
-      `https://api-inference.huggingface.co/models/${modelId}`,
-    ];
-
-    for (const url of endpoints) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 16000);
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${hfToken}`,
-            'Content-Type': 'application/json',
-            Accept: 'image/png',
+    const url = `https://router.huggingface.co/hf-inference/models/${modelId}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 32000);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${hfToken}`,
+          'Content-Type': 'application/json',
+          Accept: 'image/png',
+        },
+        body: JSON.stringify({
+          inputs: fullPrompt.slice(0, 1200),
+          parameters: {
+            width: reqW,
+            height: reqH,
+            num_inference_steps: 24,
+            guidance_scale: 5.5,
           },
-          body: JSON.stringify({
-            inputs: fullPrompt.slice(0, 1500),
-            parameters: {
-              width: dims.w,
-              height: dims.h,
-              num_inference_steps: modelId.includes('FLUX.1-schnell') ? 4 : 20,
-            },
-            options: { wait_for_model: true },
-          }),
-          signal: controller.signal,
-        });
+          options: { wait_for_model: true },
+        }),
+        signal: controller.signal,
+      });
 
-        const rawBuf = Buffer.from(await res.arrayBuffer());
-        if (!res.ok) {
-          const textErr = rawBuf.toString('utf-8').slice(0, 160);
-          lastErr = `Hugging Face (${modelId}) HTTP ${res.status}${textErr ? `: ${textErr}` : ''}`;
-          continue;
-        }
-
-        const mime = detectImageBufferMime(rawBuf, res.headers.get('content-type') || '');
-        if (mime && rawBuf.length > 64) {
-          return {
-            imageDataUrl: `data:${mime};base64,${rawBuf.toString('base64')}`,
-            modelUsed: modelId,
-            elapsedMs: Date.now() - started,
-          };
-        }
-
-        lastErr = `Hugging Face (${modelId}) returned non-image payload`;
-      } catch (err) {
-        lastErr = err instanceof Error ? err.message : String(err);
-      } finally {
-        clearTimeout(timer);
+      const rawBuf = Buffer.from(await res.arrayBuffer());
+      if (!res.ok) {
+        const textErr = rawBuf.toString('utf-8').slice(0, 220);
+        lastErr = `Hugging Face (${modelId}) HTTP ${res.status}${textErr ? `: ${textErr}` : ''}`;
+        continue;
       }
+
+      const mime = detectImageBufferMime(rawBuf, res.headers.get('content-type') || '');
+      if (mime && rawBuf.length > 64) {
+        return {
+          imageDataUrl: `data:${mime};base64,${rawBuf.toString('base64')}`,
+          modelUsed: modelId,
+          elapsedMs: Date.now() - started,
+        };
+      }
+
+      lastErr = `Hugging Face (${modelId}) returned non-image payload`;
+    } catch (err) {
+      lastErr = err instanceof Error ? err.message : String(err);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -1630,8 +2010,10 @@ async function enhanceCinemaVideoPrompt(options: {
       `1. Expand the user's plain-English camera & acting directions into rich 3D animation direction prompts.`,
       isWarmStorybook
         ? `2. MANDATORY WARM STORYBOOK 3D LOOK: Compose as a ${WARM_STORYBOOK_3D_FRAMING}. Specify soft-focus vintage cinema lens, dreamy halation, warm sunlit bloom, gentle Pro-Mist 1/2 diffusion, low micro-contrast, soft pastel matte clay and felt textures, slightly blurred soft edges, warm overexposed sunlit sky in background, and 35mm film softness. Strictly avoid razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, glossy studio lighting, or close-up portraits.`
+        : style === 'Enchanted Storybook'
+        ? `2. MANDATORY ENCHANTED STORYBOOK LOOK: Build a rich fairy-tale woodland atmosphere with ${ENCHANTED_STORYBOOK_DIRECTIVES}. Frame deep layered foreground wildflowers/ferns/mushrooms beneath mossy ancient canopies, glowing fireflies, and golden volumetric sunbeams.`
         : style === '3D Pixar-Style Cartoon' || style === '3D Cartoon'
-        ? `2. MANDATORY FEATURE-FILM 3D ANIMATION BENCHMARK: Specify sculpted stylized expressive faces with natural proportions, warm subsurface skin shading with amber bounce light, detailed corneal eye catchlights, sculpted eyebrows/eyelashes/hair braids, PBR fabric weaves and brushed metallic accents, cinematic global illumination, soft ambient occlusion, shallow depth-of-field bokeh, smooth natural body acting, and theatrical color grading (NOT photorealistic, NOT plastic glossy AI skin).`
+        ? `2. MANDATORY FEATURE-FILM 3D ANIMATION BENCHMARK: Specify sculpted stylized expressive faces with natural proportions, warm subsurface skin shading with amber bounce light, detailed corneal eye catchlights, sculpted eyebrows/eyelashes/hair braids, PBR fabric weaves and brushed metallic accents, cinematic global illumination, soft ambient occlusion, shallow depth-of-field bokeh, smooth natural body acting, and theatrical color grading (NOT photorealistic, NOT flat cartoon, NOT plastic glossy AI skin).`
         : `2. Specify cinema depth-of-field, expressive facial/eye acting, rich material shaders, warm rim lighting, and smooth continuous camera trajectories.`,
       `3. Keep EVERY detail, action, subject, and angle the user wrote intact — never override or soften their camera trajectory.`,
       refs.length > 0
@@ -2034,6 +2416,8 @@ async function synthesizeTalkingVoiceAudio(
 interface ImageGenResult {
   imageDataUrl: string;
   spaceUsed: string;
+  modelLabel: string;
+  quality: ImageQualityTier;
   nodeLabel: string;
   provider: 'cloudflare' | 'colab-turbo' | 'huggingface';
   elapsedMs: number;
@@ -2049,7 +2433,8 @@ async function tryGradioImageEndpoint(
   dims: { w: number; h: number },
   useSdxl: boolean,
   aspectRatio = '16:9',
-  extraAllowedHost?: string
+  extraAllowedHost?: string,
+  quality: ImageQualityTier = 'high'
 ): Promise<{ imageDataUrl: string }> {
   const clientOptions = extraAllowedHost ? undefined : getHfGradioOptions();
   const client = await withTimeout(
@@ -2094,12 +2479,13 @@ async function tryGradioImageEndpoint(
   }
 
   const isFlux1Dev = target === 'black-forest-labs/FLUX.1-dev';
+  const isFlux2Klein = /FLUX\.2-klein/i.test(target);
   const isQwenImage = /Qwen\/Qwen-Image/i.test(target);
   const isTurboOrSd = target.includes('stable-diffusion-3.5') || target.includes('prodia');
   const isWarmStorybook = fullPrompt.includes('Pro-Mist 1/2');
   const effectiveDims = isFlux1Dev
-    ? FLUX1_DEV_DIMENSIONS_BY_RATIO[aspectRatio] ?? dims
-    : dims;
+    ? FLUX1_DEV_DIMENSIONS_BY_RATIO[aspectRatio] ?? { w: 1024, h: 576 }
+    : FLUX2_DIMENSIONS_BY_RATIO[aspectRatio] ?? { w: 1024, h: 576 };
   const payload: Record<string, unknown> = {};
 
   for (const p of paramsMeta) {
@@ -2119,16 +2505,54 @@ async function tryGradioImageEndpoint(
       payload[name] = true;
     } else if (lower === 'aspect_ratio') {
       payload[name] = aspectRatio === '21:9' ? '16:9' : aspectRatio;
-    } else if (lower === 'prompt_enhance') {
+    } else if (lower === 'prompt_enhance' || lower === 'prompt_upsampling') {
       payload[name] = true;
+    } else if (lower === 'mode_choice') {
+      payload[name] = quality === 'ultra' ? 'High (8 steps)' : 'Distilled (4 steps)';
     } else if (lower === 'width') {
       payload[name] = effectiveDims.w;
     } else if (lower === 'height') {
       payload[name] = effectiveDims.h;
     } else if (lower === 'num_inference_steps' || lower === 'steps') {
-      payload[name] = isFlux1Dev ? 28 : isQwenImage ? 36 : isTurboOrSd ? 8 : useSdxl ? 25 : 4;
+      payload[name] = isFlux1Dev
+        ? quality === 'ultra'
+          ? 34
+          : quality === 'standard'
+          ? 20
+          : 28
+        : isFlux2Klein
+        ? quality === 'ultra'
+          ? 8
+          : 4
+        : isQwenImage
+        ? quality === 'ultra'
+          ? 40
+          : quality === 'standard'
+          ? 24
+          : 32
+        : isTurboOrSd
+        ? quality === 'ultra'
+          ? 12
+          : 8
+        : useSdxl
+        ? quality === 'ultra'
+          ? 30
+          : quality === 'standard'
+          ? 18
+          : 25
+        : 4;
     } else if (lower === 'guidance_scale' || lower === 'cfg' || lower === 'cfg_scale') {
-      payload[name] = isFlux1Dev ? 3.5 : isQwenImage ? 4 : isTurboOrSd ? 1.5 : useSdxl ? 7 : 0;
+      payload[name] = isFlux1Dev
+        ? 3.5
+        : isFlux2Klein
+        ? 1
+        : isQwenImage
+        ? 4
+        : isTurboOrSd
+        ? 1.5
+        : useSdxl
+        ? 7
+        : 0;
     } else if (p.parameter_has_default) {
       payload[name] = p.parameter_default;
     } else {
@@ -2322,6 +2746,8 @@ async function enhanceCinemaImagePrompt(options: {
       `Visual Style: ${style}`,
       style === '3D Pixar-Style Cartoon' || style === '3D Cartoon'
         ? `Visual Quality Benchmark: ${PREMIUM_3D_ANIMATION_BENCHMARK}`
+        : style === 'Enchanted Storybook'
+        ? `Visual Quality Benchmark: ${ENCHANTED_STORYBOOK_DIRECTIVES}`
         : '',
       `Remove Original Background: ${removeBackground ? 'YES — completely replace original background' : 'NO — seamlessly expand/adapt scene to prompt'}`,
       `RULES:`,
@@ -2406,7 +2832,22 @@ async function tryReferenceEditSpaces(
 
   let endpoint = '/infer';
   let payload: Record<string, unknown>;
-  if (spaceId === 'black-forest-labs/FLUX.2-dev') {
+  if (spaceId === 'black-forest-labs/FLUX.2-klein-9B') {
+    endpoint = '/generate';
+    const f2Dims = FLUX2_DIMENSIONS_BY_RATIO[aspectRatio] ?? FLUX2_DIMENSIONS_BY_RATIO['16:9'];
+    payload = {
+      prompt: editPrompt,
+      input_images: [{ image: handle_file(blob) }],
+      mode_choice: 'Distilled (4 steps)',
+      seed: 0,
+      randomize_seed: true,
+      width: f2Dims.w,
+      height: f2Dims.h,
+      num_inference_steps: 4,
+      guidance_scale: 1,
+      prompt_upsampling: true,
+    };
+  } else if (spaceId === 'black-forest-labs/FLUX.2-dev') {
     const f2Dims = FLUX2_DIMENSIONS_BY_RATIO[aspectRatio] ?? FLUX2_DIMENSIONS_BY_RATIO['16:9'];
     payload = {
       prompt: editPrompt,
@@ -2441,28 +2882,15 @@ async function tryReferenceEditSpaces(
   }
 
   const effectiveTimeout =
-    spaceId === 'black-forest-labs/FLUX.2-dev' ? Math.min(timeoutMs, 28000) : timeoutMs;
+    spaceId === 'black-forest-labs/FLUX.2-dev' || spaceId === 'black-forest-labs/FLUX.2-klein-9B'
+      ? Math.min(timeoutMs, 28000)
+      : timeoutMs;
 
   const pred = await withTimeout(
     client.predict(endpoint, payload),
     effectiveTimeout,
     `${spaceId} inference timed out.`
-  ).catch(async (firstErr) => {
-    const msg = firstErr instanceof Error ? firstErr.message : String(firstErr);
-    if (/zerogpu|quota|exceeded/i.test(msg) && getHfToken()) {
-      const anonClient = await withTimeout(
-        Client.connect(spaceId),
-        10000,
-        `${spaceId} anonymous connection timed out.`
-      );
-      return await withTimeout(
-        anonClient.predict(endpoint, payload),
-        effectiveTimeout,
-        `${spaceId} inference timed out.`
-      );
-    }
-    throw firstErr;
-  });
+  );
   const outUrl = extractGradioMediaUrl(pred.data);
   if (!outUrl) {
     throw new Error(`${spaceId} did not return a valid image URL.`);
@@ -2482,12 +2910,217 @@ async function tryReferenceEditSpaces(
   };
 }
 
+const HORDE_DIMENSIONS_BY_RATIO: Record<string, { w: number; h: number }> = {
+  '16:9': { w: 704, h: 384 },
+  '9:16': { w: 384, h: 704 },
+  '1:1': { w: 576, h: 576 },
+  '21:9': { w: 832, h: 384 },
+};
+
+let cachedHordeModels: { ts: number; models: string[] } | null = null;
+const HORDE_DEFAULT_MODELS = [
+  'Dreamshaper',
+  'Deliberate',
+  'AAM XL',
+  'SDXL 1.0',
+  '526Mix-Animated',
+  'CamelliaMix 2.5D',
+  'Hassaku XL',
+  'Comic-Diffusion',
+  'Quiet Goodnight XL',
+  'stable_diffusion',
+];
+
+async function getActiveHordeModels(): Promise<string[]> {
+  if (cachedHordeModels && Date.now() - cachedHordeModels.ts < 120_000) {
+    return cachedHordeModels.models;
+  }
+  try {
+    const res = await withTimeout(
+      fetch('https://stablehorde.net/api/v2/status/models?type=image'),
+      4500,
+      'Horde model check timed out'
+    );
+    if (res.ok) {
+      const list = (await res.json()) as Array<{
+        name?: string;
+        count?: number;
+        eta?: number;
+      }>;
+      const safe = list
+        .filter(
+          (m) =>
+            typeof m.name === 'string' &&
+            (m.count ?? 0) >= 1 &&
+            (m.eta ?? 999) <= 180 &&
+            !/inpaint|hentai|nsfw|porn|furry|yiff|babes|boob|nud|sex|ntr|pony|fuster/i.test(m.name)
+        )
+        .sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999) || (b.count ?? 0) - (a.count ?? 0))
+        .map((m) => m.name as string);
+
+      const merged = Array.from(new Set([...HORDE_DEFAULT_MODELS.filter((d) => safe.includes(d)), ...safe])).slice(0, 12);
+      if (merged.length > 0) {
+        cachedHordeModels = { ts: Date.now(), models: merged };
+        return merged;
+      }
+    }
+  } catch {
+    // Use defaults
+  }
+  return HORDE_DEFAULT_MODELS;
+}
+
+async function runCommunityHordeImage(options: {
+  prompt: string;
+  aspectRatio: string;
+  referenceBuffer?: Buffer;
+  referenceMimeType?: string;
+  quality?: ImageQualityTier;
+}): Promise<{ imageDataUrl: string; modelUsed: string; elapsedMs: number }> {
+  const started = Date.now();
+  const hordeDims = HORDE_DIMENSIONS_BY_RATIO[options.aspectRatio] ?? HORDE_DIMENSIONS_BY_RATIO['16:9'];
+  const hordeKey = process.env.HORDE_API_KEY?.trim() || '0000000000';
+  const isAnonKey = hordeKey === '0000000000';
+  const isWarmStorybook = options.prompt.includes('Pro-Mist 1/2');
+  const negativePrompt = isWarmStorybook
+    ? WARM_STORYBOOK_3D_NEGATIVE_PROMPT
+    : 'photorealistic photo, flat 2d cartoon, plastic glossy skin, text, watermark, signature, blurry, stretched, cropped, letterbox bars';
+
+  let sourceImageB64: string | undefined;
+  if (options.referenceBuffer) {
+    const id = crypto.randomUUID();
+    const mime = options.referenceMimeType || 'image/png';
+    const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+    const inFile = path.join(os.tmpdir(), `ahi-horde-in-${id}.${ext}`);
+    const outFile = path.join(os.tmpdir(), `ahi-horde-prep-${id}.webp`);
+    const fgMaxW = Math.round(hordeDims.w * 0.9);
+    const fgMaxH = Math.round(hordeDims.h * 0.9);
+    try {
+      await fs.promises.writeFile(inFile, options.referenceBuffer);
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        `color=c=#E8ECF2:s=${hordeDims.w}x${hordeDims.h}:d=1`,
+        '-i',
+        inFile,
+        '-filter_complex',
+        `[1:v]scale=${fgMaxW}:${fgMaxH}:force_original_aspect_ratio=decrease[fg];[0:v][fg]overlay=(W-w)/2:(H-h)/2`,
+        '-frames:v',
+        '1',
+        outFile,
+      ]);
+      const prepBuf = await fs.promises.readFile(outFile);
+      if (prepBuf.length > 128) {
+        sourceImageB64 = prepBuf.toString('base64');
+      }
+    } catch {
+      // Fallback to text-to-image if ffmpeg canvas prep fails
+    } finally {
+      await fs.promises.unlink(inFile).catch(() => {});
+      await fs.promises.unlink(outFile).catch(() => {});
+    }
+  }
+
+  const rawSteps = options.quality === 'ultra' ? 24 : options.quality === 'standard' ? 14 : 18;
+  const hordeSteps = isAnonKey ? Math.min(20, rawSteps) : rawSteps;
+  const hordeModels = await getActiveHordeModels();
+  const reqBody: Record<string, unknown> = {
+    prompt: `${options.prompt.slice(0, 900)} ### ${negativePrompt.slice(0, 320)}`,
+    params: {
+      width: hordeDims.w,
+      height: hordeDims.h,
+      steps: hordeSteps,
+      n: 1,
+      cfg_scale: 7,
+      sampler_name: 'k_euler_a',
+      ...(sourceImageB64 ? { denoising_strength: 0.74 } : {}),
+    },
+    ...(sourceImageB64 ? { source_image: sourceImageB64, source_processing: 'img2img' } : {}),
+    nsfw: false,
+    censor_nsfw: true,
+    r2: true,
+    models: hordeModels,
+  };
+
+  const subRes = await withTimeout(
+    fetch('https://stablehorde.net/api/v2/generate/async', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: hordeKey,
+        'Client-Agent': 'AHIStudio:1.0:studio',
+      },
+      body: JSON.stringify(reqBody),
+    }),
+    10000,
+    'Community image queue timed out.'
+  );
+  if (!subRes.ok) {
+    throw new Error(`Community image queue unavailable (${subRes.status}).`);
+  }
+  const subJson = (await subRes.json()) as { id?: string };
+  if (!subJson.id) {
+    throw new Error('Community image queue did not return a job ID.');
+  }
+
+  const jobId = subJson.id;
+  for (let i = 0; i < 48; i++) {
+    await new Promise((ok) => setTimeout(ok, 3000));
+    const chk = await withTimeout(
+      fetch(`https://stablehorde.net/api/v2/generate/check/${encodeURIComponent(jobId)}`),
+      6000,
+      'Status check timed out.'
+    );
+    if (!chk.ok) continue;
+    const st = (await chk.json()) as { done?: boolean; faulted?: boolean; is_possible?: boolean };
+    if (st.faulted || st.is_possible === false) {
+      throw new Error('Community image worker faulted.');
+    }
+    if (st.done) {
+      const finRes = await withTimeout(
+        fetch(`https://stablehorde.net/api/v2/generate/status/${encodeURIComponent(jobId)}`),
+        8000,
+        'Result fetch timed out.'
+      );
+      if (!finRes.ok) break;
+      const fin = (await finRes.json()) as {
+        generations?: Array<{ img?: string; model?: string }>;
+      };
+      const gen = fin.generations?.[0];
+      if (!gen?.img) break;
+
+      let outBuf: Buffer;
+      let outMime = 'image/webp';
+      if (/^https?:\/\//i.test(gen.img)) {
+        const imgRes = await withTimeout(fetch(gen.img), 15000, 'Image download timed out.');
+        if (!imgRes.ok) break;
+        outBuf = Buffer.from(await imgRes.arrayBuffer());
+        outMime = detectImageBufferMime(outBuf, imgRes.headers.get('content-type') || '') || 'image/webp';
+      } else {
+        outBuf = Buffer.from(gen.img, 'base64');
+        outMime = detectImageBufferMime(outBuf, '') || 'image/webp';
+      }
+      if (outBuf.length < 128) break;
+      return {
+        imageDataUrl: `data:${outMime};base64,${outBuf.toString('base64')}`,
+        modelUsed: gen.model || 'community-sd',
+        elapsedMs: Date.now() - started,
+      };
+    }
+  }
+
+  throw new Error('Community image render timed out.');
+}
+
 async function runResilientImageGeneration(
   options: {
     prompt: string;
     style: string;
     aspectRatio: string;
     engine: string;
+    quality?: ImageQualityTier;
     spaceId?: string;
     colabUrl?: string;
     allowGradioFallback?: boolean;
@@ -2515,7 +3148,15 @@ async function runResilientImageGeneration(
   const safeRatio = ALLOWED_RATIOS.includes(options.aspectRatio as (typeof ALLOWED_RATIOS)[number])
     ? options.aspectRatio
     : '16:9';
-  const dims = IMAGE_DIMENSIONS_BY_RATIO[safeRatio] ?? IMAGE_DIMENSIONS_BY_RATIO['16:9'];
+  const safeQuality: ImageQualityTier = ALLOWED_QUALITIES.includes(
+    options.quality as ImageQualityTier
+  )
+    ? (options.quality as ImageQualityTier)
+    : 'high';
+  const dims =
+    QUALITY_DIMENSIONS_BY_TIER[safeQuality][safeRatio] ??
+    IMAGE_DIMENSIONS_BY_RATIO[safeRatio] ??
+    IMAGE_DIMENSIONS_BY_RATIO['16:9'];
   const cfDims = CLOUDFLARE_DIMENSIONS_BY_RATIO[safeRatio] ?? CLOUDFLARE_DIMENSIONS_BY_RATIO['16:9'];
   const useSdxl = options.engine === 'sdxl';
 
@@ -2565,7 +3206,11 @@ async function runResilientImageGeneration(
     !options.preparedCanvasDataUrl
   ) {
     try {
-      const bgRemoved = await removeBackgroundServer(normalizedRefs[0].imageUrl);
+      const bgRemoved = await withTimeout(
+        removeBackgroundServer(normalizedRefs[0].imageUrl),
+        10000,
+        'Background segmentation fast-skip'
+      );
       effectiveInputCanvasUrl = bgRemoved.imageDataUrl;
       const updatedBuf = resolveImageInputToBuffer(bgRemoved.imageDataUrl);
       if (updatedBuf) {
@@ -2574,7 +3219,7 @@ async function runResilientImageGeneration(
         normalizedRefs[0].mimeType = updatedBuf.mimeType;
       }
     } catch {
-      // Proceed with original reference + prompt-level background replacement
+      // Proceed quickly with original reference + prompt-level background replacement
     }
   }
 
@@ -2623,9 +3268,16 @@ async function runResilientImageGeneration(
   const shouldUseGradioSpaces =
     !process.env.VERCEL || Boolean(customSpace) || Boolean(options.allowGradioFallback);
   const liveSpaces = shouldUseGradioSpaces ? await discoverRunningImageSpaces(useSdxl) : [];
+  const orderedLiveSpaces =
+    safeQuality === 'ultra' && liveSpaces.includes('black-forest-labs/FLUX.1-dev')
+      ? [
+          'black-forest-labs/FLUX.1-dev',
+          ...liveSpaces.filter((s) => s !== 'black-forest-labs/FLUX.1-dev'),
+        ]
+      : liveSpaces;
   const hfCandidates = customSpace
-    ? [customSpace, ...liveSpaces.filter((s) => s !== customSpace)]
-    : liveSpaces;
+    ? [customSpace, ...orderedLiveSpaces.filter((s) => s !== customSpace)]
+    : orderedLiveSpaces;
   const maxGradioAttempts =
     process.env.VERCEL && !customSpace
       ? options.allowGradioFallback
@@ -2643,7 +3295,8 @@ async function runResilientImageGeneration(
       maxGradioAttempts
   );
   let stepNum = 0;
-  let lastError = `Primary ${useSdxl ? 'SDXL / SD 3.5' : 'Flux.1'} nodes unavailable`;
+  let lastError = `Primary ${useSdxl ? 'SDXL / SD 3.5' : 'Flux'} nodes unavailable`;
+  let hfZeroGpuExhausted = false;
 
   if (validColab) {
     stepNum++;
@@ -2657,7 +3310,7 @@ async function runResilientImageGeneration(
       totalAttempts: totalSteps,
       progress: 20,
       translatedPrompt: fullPrompt,
-      message: `Connected to Private Colab Turbo GPU (${validColab.host}) · Rendering zero-queue...`,
+      message: 'Creating your image...',
     });
     try {
       const resImg = await tryGradioImageEndpoint(
@@ -2667,16 +3320,20 @@ async function runResilientImageGeneration(
         dims,
         useSdxl,
         safeRatio,
-        validColab.host
+        validColab.host,
+        safeQuality
       );
       const verified = await enforceServerImageAspectRatio(
         resImg.imageDataUrl,
         safeRatio,
-        fullPrompt
+        fullPrompt,
+        dims
       );
       return {
         imageDataUrl: verified.imageDataUrl,
         spaceUsed: `colab://${validColab.host}`,
+        modelLabel: 'Colab Turbo GPU',
+        quality: safeQuality,
         nodeLabel,
         provider: 'colab-turbo',
         elapsedMs: Date.now() - started,
@@ -2689,71 +3346,19 @@ async function runResilientImageGeneration(
     }
   }
 
-  // When reference images are attached, prioritize pixel-aware reference editors
-  // (FLUX.1-Kontext / Qwen-Image-Edit / FLUX.2-dev) with strict output ratio verification.
-  if (tryRefEdit && effectiveInputCanvasUrl) {
-    const editTimeoutMs = process.env.VERCEL ? 22000 : 38000;
-    for (const editSpace of REFERENCE_EDIT_SPACES) {
-      stepNum++;
-      const started = Date.now();
-      const nodeLabel = `Reference Scene Composer (${editSpace})`;
-      onStatus?.({
-        space: editSpace,
-        nodeLabel,
-        provider: 'huggingface',
-        attempt: stepNum,
-        totalAttempts: totalSteps,
-        progress: Math.min(48, 22 + stepNum * 8),
-        translatedPrompt: editPrompt,
-        message: `Composing reference character into ${safeRatio} scene...`,
-      });
-      try {
-        const spaceInputUrl =
-          editSpace === 'black-forest-labs/FLUX.2-dev'
-            ? normalizedRefs[0].imageUrl
-            : contextPreparedCanvasUrl || effectiveInputCanvasUrl;
-        const edited = await tryReferenceEditSpaces(
-          editSpace,
-          spaceInputUrl,
-          editPrompt,
-          safeRatio,
-          editTimeoutMs
-        );
-        const verified = await enforceServerImageAspectRatio(
-          edited.imageDataUrl,
-          safeRatio,
-          editPrompt
-        );
-        return {
-          imageDataUrl: verified.imageDataUrl,
-          spaceUsed: editSpace,
-          nodeLabel,
-          provider: 'huggingface',
-          elapsedMs: Date.now() - started,
-          translatedPrompt: editPrompt,
-          width: verified.width,
-          height: verified.height,
-        };
-      } catch (err) {
-        lastError = err instanceof Error ? err.message : String(err);
-      }
-    }
-  }
-
+  // 1. Primary Image Engine: Cloudflare Workers AI FIRST (10,000 free neurons/day, zero ZeroGPU limits)
   if (cfCreds) {
     stepNum++;
-    const nodeLabel = 'Cloudflare Workers AI (Instant 1–3s)';
+    const nodeLabel = 'Cloudflare Workers AI';
     onStatus?.({
-      space: '@cf/black-forest-labs/flux-1-schnell',
+      space: '@cf/black-forest-labs/flux-2-dev',
       nodeLabel,
       provider: 'cloudflare',
       attempt: stepNum,
       totalAttempts: totalSteps,
-      progress: 55,
+      progress: 42,
       translatedPrompt: fullPrompt,
-      message: validColab
-        ? `Colab node offline — instant rendering via Cloudflare Workers AI (@cf/black-forest-labs/flux-1-schnell)...`
-        : `Instant zero-queue render via Cloudflare Workers AI (@cf/black-forest-labs/flux-1-schnell)...`,
+      message: 'Creating your image...',
     });
 
     try {
@@ -2762,16 +3367,20 @@ async function runResilientImageGeneration(
         safeRatio,
         cfCreds.accountId,
         cfCreds.apiToken,
-        normalizedRefs[0] ? { buffer: normalizedRefs[0].buffer, mimeType: normalizedRefs[0].mimeType } : undefined
+        normalizedRefs[0] ? { buffer: normalizedRefs[0].buffer, mimeType: normalizedRefs[0].mimeType } : undefined,
+        safeQuality
       );
       const verified = await enforceServerImageAspectRatio(
         cfRes.imageDataUrl,
         safeRatio,
-        fullPrompt
+        fullPrompt,
+        dims
       );
       return {
         imageDataUrl: verified.imageDataUrl,
         spaceUsed: cfRes.modelUsed,
+        modelLabel: formatModelDisplayLabel(cfRes.modelUsed),
+        quality: safeQuality,
         nodeLabel: `Cloudflare Workers AI (${cfRes.modelUsed})`,
         provider: 'cloudflare',
         elapsedMs: cfRes.elapsedMs,
@@ -2784,31 +3393,33 @@ async function runResilientImageGeneration(
     }
   }
 
+  // 2. Fallback: Official Hugging Face Inference API (authenticated with HF_TOKEN)
   if (hfToken) {
     stepNum++;
     const nodeLabel = 'Hugging Face Inference API';
     onStatus?.({
-      space: 'black-forest-labs/FLUX.1-schnell',
+      space: 'stabilityai/stable-diffusion-3-medium-diffusers',
       nodeLabel,
       provider: 'huggingface',
       attempt: stepNum,
       totalAttempts: totalSteps,
       progress: 65,
       translatedPrompt: fullPrompt,
-      message: cfCreds
-        ? `${lastError} — falling back to Direct Hugging Face Inference API...`
-        : `Rendering via Direct Hugging Face Inference API...`,
+      message: 'Creating your image...',
     });
     try {
       const hfDirect = await runDirectHuggingFaceImage(fullPrompt, dims, useSdxl, hfToken);
       const verified = await enforceServerImageAspectRatio(
         hfDirect.imageDataUrl,
         safeRatio,
-        fullPrompt
+        fullPrompt,
+        dims
       );
       return {
         imageDataUrl: verified.imageDataUrl,
         spaceUsed: hfDirect.modelUsed,
+        modelLabel: formatModelDisplayLabel(hfDirect.modelUsed),
+        quality: safeQuality,
         nodeLabel,
         provider: 'huggingface',
         elapsedMs: hfDirect.elapsedMs,
@@ -2821,7 +3432,66 @@ async function runResilientImageGeneration(
     }
   }
 
+  // 3. Secondary Fallback for reference-conditioned renders if Cloudflare & Inference API unavailable
+  if (tryRefEdit && effectiveInputCanvasUrl) {
+    const editTimeoutMs = process.env.VERCEL ? 16000 : 22000;
+    for (const editSpace of REFERENCE_EDIT_SPACES) {
+      stepNum++;
+      const started = Date.now();
+      const nodeLabel = 'Scene Composer';
+      onStatus?.({
+        space: editSpace,
+        nodeLabel,
+        provider: 'huggingface',
+        attempt: stepNum,
+        totalAttempts: totalSteps,
+        progress: Math.min(78, 52 + stepNum * 8),
+        translatedPrompt: editPrompt,
+        message: 'Creating your image...',
+      });
+      try {
+        const spaceInputUrl =
+          editSpace === 'black-forest-labs/FLUX.2-dev' ||
+          editSpace === 'black-forest-labs/FLUX.2-klein-9B'
+            ? normalizedRefs[0].imageUrl
+            : contextPreparedCanvasUrl || effectiveInputCanvasUrl;
+        const edited = await tryReferenceEditSpaces(
+          editSpace,
+          spaceInputUrl,
+          editPrompt,
+          safeRatio,
+          editTimeoutMs
+        );
+        const verified = await enforceServerImageAspectRatio(
+          edited.imageDataUrl,
+          safeRatio,
+          editPrompt,
+          dims
+        );
+        return {
+          imageDataUrl: verified.imageDataUrl,
+          spaceUsed: editSpace,
+          modelLabel: formatModelDisplayLabel(editSpace),
+          quality: safeQuality,
+          nodeLabel,
+          provider: 'huggingface',
+          elapsedMs: Date.now() - started,
+          translatedPrompt: editPrompt,
+          width: verified.width,
+          height: verified.height,
+        };
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+        if (/zerogpu|quota|exceeded/i.test(lastError)) {
+          hfZeroGpuExhausted = true;
+          break;
+        }
+      }
+    }
+  }
+
   for (let i = 0; i < maxGradioAttempts; i++) {
+    if (hfZeroGpuExhausted) break;
     stepNum++;
     const candidate = hfCandidates[i];
     const nodeLabel = getNodeLabel(candidate);
@@ -2836,10 +3506,7 @@ async function runResilientImageGeneration(
       totalAttempts: totalSteps,
       progress: Math.min(90, baseProgress),
       translatedPrompt: fullPrompt,
-      message:
-        stepNum > 1
-          ? `${lastError} — failing over to ${nodeLabel} (${candidate})...`
-          : `Connecting to ${nodeLabel} (${candidate})...`,
+      message: 'Creating your image...',
     });
 
     try {
@@ -2849,16 +3516,21 @@ async function runResilientImageGeneration(
         fullPrompt,
         dims,
         useSdxl,
-        safeRatio
+        safeRatio,
+        undefined,
+        safeQuality
       );
       const verified = await enforceServerImageAspectRatio(
         resImg.imageDataUrl,
         safeRatio,
-        fullPrompt
+        fullPrompt,
+        dims
       );
       return {
         imageDataUrl: verified.imageDataUrl,
         spaceUsed: candidate,
+        modelLabel: formatModelDisplayLabel(candidate),
+        quality: safeQuality,
         nodeLabel,
         provider: 'huggingface',
         elapsedMs: Date.now() - started,
@@ -2868,10 +3540,56 @@ async function runResilientImageGeneration(
       };
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
+      if (/zerogpu|quota|exceeded/i.test(lastError)) {
+        hfZeroGpuExhausted = true;
+        break;
+      }
     }
   }
 
-  throw new Error(`Server image providers unavailable (${lastError}).`);
+  // 5. Final Zero-Quota Community GPU Fallback when Cloudflare 10k neurons & HF ZeroGPU limits are both reached
+  try {
+    stepNum++;
+    onStatus?.({
+      space: 'community-gpu',
+      nodeLabel: 'Community Render Cluster',
+      provider: 'huggingface',
+      attempt: stepNum,
+      totalAttempts: Math.max(stepNum, totalSteps),
+      progress: 92,
+      translatedPrompt: fullPrompt,
+      message: 'Creating your image...',
+    });
+    const hordeRes = await runCommunityHordeImage({
+      prompt: fullPrompt,
+      aspectRatio: safeRatio,
+      referenceBuffer: normalizedRefs[0]?.buffer,
+      referenceMimeType: normalizedRefs[0]?.mimeType,
+      quality: safeQuality,
+    });
+    const verified = await enforceServerImageAspectRatio(
+      hordeRes.imageDataUrl,
+      safeRatio,
+      fullPrompt,
+      dims
+    );
+    return {
+      imageDataUrl: verified.imageDataUrl,
+      spaceUsed: hordeRes.modelUsed,
+      modelLabel: formatModelDisplayLabel(hordeRes.modelUsed),
+      quality: safeQuality,
+      nodeLabel: 'Community Render Cluster',
+      provider: 'huggingface',
+      elapsedMs: hordeRes.elapsedMs,
+      translatedPrompt: fullPrompt,
+      width: verified.width,
+      height: verified.height,
+    };
+  } catch {
+    // Throw clean user-friendly error only if all 5 tiers fail
+  }
+
+  throw new Error('Image creation is temporarily busy. Please try again in a moment.');
 }
 
 function sanitizeSvgMarkup(rawSvg: string, width: number, height: number): string {
@@ -3073,6 +3791,8 @@ async function generateEpisodeScriptJson(body: Record<string, unknown>): Promise
       `- Automatically assign the right character IDs (assignedCharacterIds), cameraAngle, cameraMotion (one of: Auto, Zoom In, Zoom Out, Pan Left, Pan Right, Orbit, Drone Flyover, Static), lightingMood, dialogueLines, narration, and sfxPresetId (one of: none, sparkle, boing, footsteps, whoosh, nature, fanfare).`,
       safeStyle === 'Warm Storybook 3D'
         ? `- MANDATORY WARM STORYBOOK 3D VISUAL STYLE: Write every visualPrompt as a wide 16:9 candid full-scene movie frame with foreground and background layers where characters interact naturally in sunlit environments (never close-up portraits), featuring soft-focus vintage cinema lens, dreamy halation, warm sunlit bloom, Pro-Mist 1/2 mist diffusion, low micro-contrast, soft pastel matte clay and felt textures, warm overexposed sunlit sky, and 35mm film softness — strictly avoiding razor-sharp focus, ultra-detailed pores, sharp fabric lines, high-contrast HDR, or glossy studio lighting.`
+        : safeStyle === 'Enchanted Storybook'
+        ? `- MANDATORY ENCHANTED STORYBOOK VISUAL STYLE: Write every visualPrompt with ${ENCHANTED_STORYBOOK_DIRECTIVES}, blending rich atmospheric fairy-tale depth, golden volumetric sunbeams through ancient mossy trees, floating fireflies/dust motes, and lush botanical foregrounds (wildflowers, ferns, mushrooms).`
         : safeStyle === '3D Pixar-Style Cartoon' || safeStyle === '3D Cartoon'
         ? `- MANDATORY FEATURE-FILM 3D ANIMATION VISUAL BENCHMARK: Write every visualPrompt in theatrical 3D feature animation quality (${PREMIUM_3D_ANIMATION_BENCHMARK}), specifying consistent character faces, sculpted hair braids/strands, tactile woven textiles, global illumination, soft ambient occlusion, shallow depth-of-field bokeh, and lush layered environments (no text overlays or watermarks).`
         : `- Write lush animated cinema visualPrompt descriptions specifying rich materials, lighting depth, expressive character acting, depth-of-field, and smooth camera paths (no text overlays or watermarks).`,
@@ -3320,6 +4040,8 @@ async function generateStoryboardJson(body: Record<string, unknown>): Promise<Re
     const styleVisualDirective: Record<string, string> = {
       'Warm Storybook 3D':
         'Compose wide 16:9 candid full-scene movie frames with foreground and background layers in sunlit environments rather than close-up portraits. Use soft pastel matte clay and felt tones, warm overexposed sunlit sky, gentle mist halation, low micro-contrast, and soft slightly blurred edges.',
+      'Enchanted Storybook':
+        'Compose atmospheric fairy-tale woodland frames with golden volumetric sunbeams through mossy trees, glowing fireflies and dust motes, botanical foreground framing with wildflowers, ferns, and mushrooms, soft DOF haze, and warm painterly tones.',
       '3D Pixar-Style Cartoon':
         'Use tactile rounded volumetric forms, soft subsurface radial gradients, expressive hero silhouettes, warm rim lighting, and lush layered foreground/background depth.',
       '3D Cartoon':
@@ -3784,6 +4506,7 @@ export async function handleGenerateImageRequest(
       style = 'Cinematic Film',
       aspectRatio = '16:9',
       engine = 'flux-schnell',
+      quality = 'high',
       spaceId,
       colabUrl,
       imageDataUrl,
@@ -3807,11 +4530,16 @@ export async function handleGenerateImageRequest(
       );
     }
 
+    const safeQuality: ImageQualityTier = ALLOWED_QUALITIES.includes(quality as ImageQualityTier)
+      ? (quality as ImageQualityTier)
+      : 'high';
+
     const genOptions = {
       prompt,
       style: String(style),
       aspectRatio: String(aspectRatio),
       engine: String(engine),
+      quality: safeQuality,
       spaceId: typeof spaceId === 'string' ? spaceId : undefined,
       colabUrl: typeof colabUrl === 'string' ? colabUrl : undefined,
       imageDataUrl: typeof imageDataUrl === 'string' ? imageDataUrl : undefined,
@@ -3942,12 +4670,7 @@ async function streamStandardVideo(
   sendEvent({
     type: 'status',
     progress: 8,
-    message:
-      normalizedRefs.length > 0
-        ? `Enhancing cinematography & blending ${normalizedRefs.length} reference image${
-            normalizedRefs.length > 1 ? 's' : ''
-          } with Gemini...`
-        : 'Enhancing camera directions with Gemini Cinema Prompt Enhancer...',
+    message: 'Creating your video...',
   });
 
   const { enhancedPrompt, useExactStartFrame } = await enhanceCinemaVideoPrompt({
@@ -3977,68 +4700,26 @@ async function streamStandardVideo(
     : null;
   let autoGeneratedStartFrameUrl: string | undefined;
 
+  const clientMotionFallback = body.clientMotionFallback === true;
   const customSpace =
     typeof spaceId === 'string' && SPACE_ID_RE.test(spaceId.trim()) ? spaceId.trim() : null;
-
-  sendEvent({
-    type: 'status',
-    progress: 11,
-    message: 'Discovering live GPU Spaces across Wan2.1, Wan2.2, LTX-Video & CogVideoX...',
-  });
-
-  const liveRunningSpaces = await discoverRunningVideoSpaces(safeMode);
-  const hfCandidates = customSpace
-    ? [customSpace, ...liveRunningSpaces.filter((s) => s !== customSpace)]
-    : liveRunningSpaces;
-
-  const validColab = validateColabGradioUrl(colabUrl);
-  const nodesToTry: Array<{
-    target: string;
-    displaySpace: string;
-    nodeLabel: string;
-    provider: 'colab-turbo' | 'huggingface';
-    extraAllowedHost?: string;
-  }> = [];
-
-  if (validColab) {
-    nodesToTry.push({
-      target: validColab.url,
-      displaySpace: `colab://${validColab.host}`,
-      nodeLabel: 'Colab Turbo GPU (Private Zero-Queue)',
-      provider: 'colab-turbo',
-      extraAllowedHost: validColab.host,
-    });
-  }
-
-  for (const s of hfCandidates) {
-    nodesToTry.push({
-      target: s,
-      displaySpace: s,
-      nodeLabel: getNodeLabel(s),
-      provider: 'huggingface',
-    });
-  }
-
   const fullPrompt = buildTranslatedVideoPrompt(enhancedPrompt, String(style), safeRatio, safeMotion);
   const videoTargetDims = VIDEO_DIMENSIONS_BY_RATIO[safeRatio] ?? VIDEO_DIMENSIONS_BY_RATIO['16:9'];
-  const queueTimeoutMs = process.env.VERCEL ? 52_000 : 120_000;
-  let lastError = 'Live running video Spaces are currently queued.';
+  const queueTimeoutMs = process.env.VERCEL ? 35_000 : 45_000;
+  let lastError = 'External video nodes are temporarily busy.';
 
   let autoFrameFailed = false;
-  const ensureAutoStartingFrame = async (targetNodeLabel: string): Promise<Blob | null> => {
+  const ensureAutoStartingFrame = async (): Promise<Blob | null> => {
     if (activeImageBlob) return activeImageBlob;
     if (autoFrameFailed) {
-      throw new Error(lastError || 'Starting scene frame generation unavailable.');
+      throw new Error(lastError || 'Starting scene frame unavailable.');
     }
 
     sendEvent({
       type: 'status',
       progress: 22,
       translatedPrompt: fullPrompt,
-      message:
-        normalizedRefs.length > 0
-          ? `Composing ${safeRatio} scene frame from uploaded reference before animating...`
-          : `Awake GPU node (${targetNodeLabel}) requires Image-to-Video — generating a fast starting frame first...`,
+      message: 'Composing scene frame...',
     });
 
     let startImg: ImageGenResult;
@@ -4076,23 +4757,106 @@ async function streamStandardVideo(
 
     sendEvent({
       type: 'status',
-      progress: 30,
+      progress: 32,
       imageDataUrl: startImg.imageDataUrl,
       translatedPrompt: fullPrompt,
-      message: `Starting frame (${startImg.width}×${startImg.height}) ready — feeding directly into ${targetNodeLabel}...`,
+      message: 'Creating your video...',
     });
 
     return activeImageBlob;
   };
 
-  // CRITICAL: When user uploaded reference image(s) that do NOT match safeRatio (e.g., 9:16 ref -> 16:9 video)
-  // or uploaded multiple references, render a verified target-ratio scene frame FIRST before video generation
-  // so no I2V model inherits a 9:16 portrait canvas and T2V nodes never lose the reference character.
+  // Always compose a verified target-ratio scene frame first when user supplied reference image(s)
+  // that do not match safeRatio (e.g., 9:16 ref -> 16:9 video) or multiple references.
   if (normalizedRefs.length > 0 && !activeImageBlob) {
     try {
-      await ensureAutoStartingFrame('Video Scene Generator');
+      await ensureAutoStartingFrame();
     } catch (preFrameErr) {
       lastError = preFrameErr instanceof Error ? preFrameErr.message : String(preFrameErr);
+    }
+  }
+
+  // TIER 1: Optional Private Colab Turbo GPU (if configured by user) -> Official Hugging Face Inference Router
+  const validColab = validateColabGradioUrl(colabUrl);
+  const hfToken = getHfToken();
+  const startedPipeline = Date.now();
+
+  if (hfToken && !validColab) {
+    sendEvent({
+      type: 'status',
+      progress: 36,
+      translatedPrompt: fullPrompt,
+      message: 'Creating your video...',
+    });
+    try {
+      const startBuf = activeImageBlob ? Buffer.from(await activeImageBlob.arrayBuffer()) : undefined;
+      const routerVideo = await tryHuggingFaceInferenceRouterVideo({
+        prompt: fullPrompt,
+        aspectRatio: safeRatio,
+        hfToken,
+        startImageBuffer: startBuf,
+        startImageMime: activeImageBlob?.type || 'image/png',
+      });
+      if (routerVideo) {
+        const finalVideoUrl = serializeRenderedVideoUrl(
+          routerVideo.buffer,
+          routerVideo.mimeType,
+          ''
+        );
+        sendEvent({
+          type: 'complete',
+          videoUrl: finalVideoUrl,
+          ...(autoGeneratedStartFrameUrl ? { imageDataUrl: autoGeneratedStartFrameUrl } : {}),
+          spaceUsed: routerVideo.modelUsed,
+          nodeLabel: 'Cinema Video Engine',
+          provider: 'huggingface',
+          elapsedMs: Date.now() - startedPipeline,
+          translatedPrompt: fullPrompt,
+          width: routerVideo.width,
+          height: routerVideo.height,
+          aspectRatio: safeRatio,
+          progress: 100,
+          mode: activeImageBlob ? 'image-to-video' : 'text-to-video',
+        });
+        return;
+      }
+    } catch {
+      // Tier 2 silent failover
+    }
+  }
+
+  // TIER 2: Silent backend-authenticated failover (private Colab if provided + live HF nodes with fast quota guard)
+  const nodesToTry: Array<{
+    target: string;
+    displaySpace: string;
+    nodeLabel: string;
+    provider: 'colab-turbo' | 'huggingface';
+    extraAllowedHost?: string;
+  }> = [];
+
+  if (validColab) {
+    nodesToTry.push({
+      target: validColab.url,
+      displaySpace: `colab://${validColab.host}`,
+      nodeLabel: 'Colab Turbo GPU',
+      provider: 'colab-turbo',
+      extraAllowedHost: validColab.host,
+    });
+  }
+
+  if (hfToken || validColab) {
+    const liveRunningSpaces = await discoverRunningVideoSpaces(safeMode).catch(() => VIDEO_SPACES_I2V);
+    const hfCandidates = customSpace
+      ? [customSpace, ...liveRunningSpaces.filter((s) => s !== customSpace)]
+      : liveRunningSpaces;
+    const maxTier2Spaces = process.env.VERCEL ? 2 : 3;
+    for (const s of hfCandidates.slice(0, maxTier2Spaces)) {
+      nodesToTry.push({
+        target: s,
+        displaySpace: s,
+        nodeLabel: 'Cinema Video Engine',
+        provider: 'huggingface',
+      });
     }
   }
 
@@ -4106,32 +4870,18 @@ async function streamStandardVideo(
 
       sendEvent({
         type: 'status',
-        space: node.displaySpace,
-        nodeLabel: node.nodeLabel,
-        provider: node.provider,
-        attempt: i + 1,
-        totalAttempts: nodesToTry.length,
-        progress: Math.round(12 + (i / nodesToTry.length) * 20),
+        progress: Math.min(58, Math.round(38 + (i / Math.max(1, nodesToTry.length)) * 18)),
         translatedPrompt: fullPrompt,
-        message:
-          i === 0
-            ? node.provider === 'colab-turbo'
-              ? `Connecting to Private Colab Turbo GPU (${validColab?.host})...`
-              : `Connecting to running GPU node ${node.nodeLabel} (${node.displaySpace})...`
-            : `Primary queue busy — failing over to ${node.nodeLabel} (${node.displaySpace})...`,
+        message: 'Creating your video...',
       });
 
       const clientOptions = node.provider === 'huggingface' ? getHfGradioOptions() : undefined;
       const client = await withTimeout(
         Client.connect(node.target, clientOptions),
-        18000,
-        `${node.nodeLabel} connection timed out.`
+        10000,
+        'Connection timed out.'
       );
-      const api = await withTimeout(
-        client.view_api(),
-        12000,
-        `${node.nodeLabel} API schema timed out.`
-      );
+      const api = await withTimeout(client.view_api(), 8000, 'API schema timed out.');
 
       const namedEntries = Object.entries(api.named_endpoints ?? {}).filter(
         ([k]) => !/^\/?(_|handle_|update_|extract_|fit_|on_)/i.test(k)
@@ -4185,25 +4935,19 @@ async function streamStandardVideo(
 
       const requiresMandatoryImage =
         !isCogVideoSpace && paramsMeta.some((p) => !p.parameter_has_default && isPrimaryImageParam(p));
-
       const endpointIsI2v = /i2v|img2vid|image_to_video/i.test(String(chosenEndpoint));
 
       if (!activeImageBlob && (requiresMandatoryImage || isExplicitI2vSpace || endpointIsI2v)) {
-        if (autoFrameFailed) {
-          lastError = `${node.nodeLabel} requires a starting image (${lastError})`;
-          continue;
-        }
+        if (autoFrameFailed) continue;
         try {
-          await ensureAutoStartingFrame(node.nodeLabel);
+          await ensureAutoStartingFrame();
           chosenEndpoint = pickEndpointForCurrentFrame(Boolean(activeImageBlob));
           epInfo =
             typeof chosenEndpoint === 'string'
               ? api.named_endpoints?.[chosenEndpoint]
               : api.unnamed_endpoints?.[0];
           paramsMeta = epInfo?.parameters ?? [];
-        } catch (imgErr) {
-          const msg = imgErr instanceof Error ? imgErr.message : String(imgErr);
-          lastError = `${node.nodeLabel} requires a starting image (${msg})`;
+        } catch {
           continue;
         }
       }
@@ -4212,7 +4956,6 @@ async function streamStandardVideo(
         (p) => !p.parameter_has_default && isPrimaryImageParam(p)
       );
       if (!activeImageBlob && stillRequiresPrimaryImage) {
-        lastError = `${node.nodeLabel} requires an input_image starting frame.`;
         continue;
       }
 
@@ -4225,9 +4968,7 @@ async function streamStandardVideo(
       const resolveParamValue = (p: (typeof paramsMeta)[number]): unknown => {
         const name = p.parameter_name ?? '';
         const lower = name.toLowerCase();
-        if (lower.includes('prompt') && !lower.includes('negative')) {
-          return fullPrompt;
-        }
+        if (lower.includes('prompt') && !lower.includes('negative')) return fullPrompt;
         if (lower.includes('negative')) {
           return isWarmStorybookVideo
             ? WARM_STORYBOOK_3D_NEGATIVE_PROMPT
@@ -4235,41 +4976,20 @@ async function streamStandardVideo(
             ? p.parameter_default
             : 'text, watermark, signature, blurry, low quality, stretched, artifacts';
         }
-        if (lower === 'mode') {
-          return activeImageBlob ? 'image-to-video' : 'text-to-video';
-        }
-        if (lower === 'generation_mode') {
-          return activeImageBlob ? 'Image-to-Video' : 'Text-to-Video';
-        }
-        if (lower === 'width_ui' || lower === 'width') {
-          return videoTargetDims.w;
-        }
-        if (lower === 'height_ui' || lower === 'height') {
-          return videoTargetDims.h;
-        }
+        if (lower === 'mode') return activeImageBlob ? 'image-to-video' : 'text-to-video';
+        if (lower === 'generation_mode') return activeImageBlob ? 'Image-to-Video' : 'Text-to-Video';
+        if (lower === 'width_ui' || lower === 'width') return videoTargetDims.w;
+        if (lower === 'height_ui' || lower === 'height') return videoTargetDims.h;
         if (activeImageBlob && !attachedPrimary && isPrimaryImageParam(p)) {
           attachedPrimary = true;
           return handle_file(activeImageBlob);
         }
-        if (isWan22 && lower === 'quality') {
+        if (isWan22 && (lower === 'quality' || lower === 'steps')) return 8;
+        if ((lower === 'num_inference_steps' || lower === 'steps') && isDistilled && !p.parameter_has_default) {
           return 8;
         }
-        if (isWan22 && lower === 'steps') {
-          return 8;
-        }
-        if (
-          (lower === 'num_inference_steps' || lower === 'steps') &&
-          isDistilled &&
-          !p.parameter_has_default
-        ) {
-          return 8;
-        }
-        if ((lower === 'duration' || lower === 'seconds') && !p.parameter_has_default) {
-          return 3;
-        }
-        if (p.parameter_has_default) {
-          return p.parameter_default;
-        }
+        if ((lower === 'duration' || lower === 'seconds') && !p.parameter_has_default) return 3;
+        if (p.parameter_has_default) return p.parameter_default;
         return null;
       };
 
@@ -4291,127 +5011,55 @@ async function streamStandardVideo(
         ? 'image-to-video'
         : 'text-to-video';
 
-      sendEvent({
-        type: 'status',
-        space: node.displaySpace,
-        nodeLabel: node.nodeLabel,
-        provider: node.provider,
-        attempt: i + 1,
-        totalAttempts: nodesToTry.length,
-        progress: 34,
-        translatedPrompt: fullPrompt,
-        ...(autoGeneratedStartFrameUrl ? { imageDataUrl: autoGeneratedStartFrameUrl } : {}),
-        message:
-          node.provider === 'colab-turbo'
-            ? `Connected to Colab Turbo GPU · Rendering zero-queue...`
-            : autoGeneratedStartFrameUrl
-            ? `Connected to ${node.nodeLabel} · Animating starting frame...`
-            : `Connected to ${node.nodeLabel} · Submitting clip...`,
-      });
-
-      const runSubmitJob = async (activeClient: Client): Promise<{ videoUrl: string | null; errMsg: string | null }> => {
-        const job = activeClient.submit(chosenEndpoint, submitArgs, null, null, true);
-        let foundUrl: string | null = null;
-        let errMsg: string | null = null;
-        const jobStart = Date.now();
-        for await (const msg of job) {
-          if (Date.now() - jobStart > queueTimeoutMs && !foundUrl) {
-            errMsg = `${node.nodeLabel} queue wait exceeded ${Math.round(queueTimeoutMs / 1000)}s limit.`;
+      const job = client.submit(chosenEndpoint, submitArgs, null, null, true);
+      let videoUrl: string | null = null;
+      let hitZeroGpuLimit = false;
+      const jobStart = Date.now();
+      for await (const msg of job) {
+        if (Date.now() - jobStart > queueTimeoutMs && !videoUrl) {
+          break;
+        }
+        if (msg.type === 'status') {
+          const pct =
+            msg.stage === 'generating'
+              ? 72
+              : typeof msg.position === 'number'
+              ? Math.max(44, 64 - Math.min(20, msg.position * 2))
+              : 54;
+          sendEvent({
+            type: 'status',
+            progress: pct,
+            translatedPrompt: fullPrompt,
+            message: 'Creating your video...',
+          });
+          if (msg.stage === 'error') {
+            const errTxt =
+              typeof msg.message === 'string' ? msg.message : JSON.stringify(msg.message ?? '');
+            if (/zerogpu|quota|exceeded|limit|429/i.test(errTxt)) {
+              hitZeroGpuLimit = true;
+            }
             break;
           }
-          if (msg.type === 'status') {
-            const queueInfo =
-              typeof msg.position === 'number' ? `Queue #${msg.position + 1}` : msg.stage;
-            const etaInfo =
-              typeof msg.eta === 'number' && msg.eta > 0 ? ` · Est. ${Math.round(msg.eta)}s` : '';
-            const pct =
-              msg.stage === 'generating'
-                ? 68
-                : typeof msg.position === 'number'
-                ? Math.max(36, 58 - Math.min(20, msg.position * 2))
-                : 48;
-
-            sendEvent({
-              type: 'status',
-              space: node.displaySpace,
-              nodeLabel: node.nodeLabel,
-              provider: node.provider,
-              attempt: i + 1,
-              totalAttempts: nodesToTry.length,
-              progress: pct,
-              queuePosition: msg.position,
-              eta: msg.eta,
-              translatedPrompt: fullPrompt,
-              message: `Connected to ${node.nodeLabel} · ${queueInfo}${etaInfo}`,
-            });
-
-            if (msg.stage === 'error') {
-              errMsg =
-                typeof msg.message === 'string'
-                  ? msg.message
-                  : Array.isArray(msg.message)
-                  ? msg.message.map((e: { message?: string }) => e.message).join('; ')
-                  : `${node.nodeLabel} reported an error.`;
-              break;
-            }
-          } else if (msg.type === 'data') {
-            foundUrl = extractGradioMediaUrl(msg.data, node.extraAllowedHost);
-            if (foundUrl) break;
-          }
-        }
-        return { videoUrl: foundUrl, errMsg };
-      };
-
-      let { videoUrl, errMsg } = await runSubmitJob(client);
-      if (
-        !videoUrl &&
-        errMsg &&
-        /zerogpu|quota|exceeded/i.test(errMsg) &&
-        node.provider === 'huggingface' &&
-        getHfToken()
-      ) {
-        try {
-          const anonClient = await withTimeout(
-            Client.connect(node.target),
-            12000,
-            `${node.nodeLabel} anonymous connection timed out.`
-          );
-          const anonRes = await runSubmitJob(anonClient);
-          videoUrl = anonRes.videoUrl;
-          errMsg = anonRes.errMsg;
-        } catch (anonErr) {
-          errMsg = anonErr instanceof Error ? anonErr.message : errMsg;
+        } else if (msg.type === 'data') {
+          videoUrl = extractGradioMediaUrl(msg.data, node.extraAllowedHost);
+          if (videoUrl) break;
         }
       }
 
-      if (!videoUrl) {
-        if (errMsg) lastError = errMsg;
-        continue;
+      if (hitZeroGpuLimit) {
+        // Immediately drop out of HF ZeroGPU Space loop into Tier 3 Cinema Motion
+        break;
       }
-
-      sendEvent({
-        type: 'status',
-        space: node.displaySpace,
-        nodeLabel: node.nodeLabel,
-        provider: node.provider,
-        attempt: i + 1,
-        totalAttempts: nodesToTry.length,
-        progress: 90,
-        translatedPrompt: fullPrompt,
-        message: `Downloading rendered MP4 from ${node.nodeLabel}...`,
-      });
+      if (!videoUrl) continue;
 
       const vidRes = await withTimeout(
         fetch(videoUrl, {
           headers: node.provider === 'huggingface' ? getHfAuthHeadersForUrl(videoUrl) : undefined,
         }),
-        30000,
-        `Video download from ${node.nodeLabel} timed out.`
+        25000,
+        'Video download timed out.'
       );
-      if (!vidRes.ok) {
-        lastError = `Could not download video output from ${node.nodeLabel}.`;
-        continue;
-      }
+      if (!vidRes.ok) continue;
 
       const rawMime = vidRes.headers.get('content-type') || 'video/mp4';
       const rawBuf = Buffer.from(await vidRes.arrayBuffer());
@@ -4427,7 +5075,7 @@ async function streamStandardVideo(
         videoUrl: finalVideoUrl,
         ...(autoGeneratedStartFrameUrl ? { imageDataUrl: autoGeneratedStartFrameUrl } : {}),
         spaceUsed: node.displaySpace,
-        nodeLabel: node.nodeLabel,
+        nodeLabel: 'Cinema Video Engine',
         provider: node.provider,
         elapsedMs: Date.now() - started,
         translatedPrompt: fullPrompt,
@@ -4438,17 +5086,131 @@ async function streamStandardVideo(
         mode: effectiveMode,
       });
       return;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+    } catch {
+      // Silent Tier 2 failover
     }
   }
 
-  sendEvent({
-    type: 'error',
-    error: `All live running video Spaces (${hfCandidates
-      .slice(0, 4)
-      .join(', ')}) are currently queued (${lastError}). Try again shortly or connect your free Colab GPU Notebook.`,
-  });
+  // TIER 3: Guaranteed Zero-Error Instant Cinema Motion Fallback (Cloudflare Workers AI scene frame + FFmpeg motion MP4)
+  try {
+    let fallbackImageDataUrl = autoGeneratedStartFrameUrl;
+    if (!fallbackImageDataUrl && shouldUseSingleFrameI2v && normalizedRefs[0]) {
+      fallbackImageDataUrl = `data:${normalizedRefs[0].mimeType};base64,${normalizedRefs[0].buffer.toString('base64')}`;
+    }
+    if (!fallbackImageDataUrl) {
+      sendEvent({
+        type: 'status',
+        progress: 58,
+        translatedPrompt: fullPrompt,
+        message: 'Creating your video...',
+      });
+      if (autoFrameFailed) {
+        fallbackImageDataUrl = await composeGuaranteedFallbackSceneFrame({
+          aspectRatio: safeRatio,
+          referenceBuffer: normalizedRefs[0]?.buffer,
+          referenceMimeType: normalizedRefs[0]?.mimeType,
+        });
+      } else {
+        try {
+          const cfFrame = await runResilientImageGeneration({
+            prompt: enhancedPrompt,
+            style: String(style),
+            aspectRatio: safeRatio,
+            engine: 'flux-schnell',
+            colabUrl: typeof colabUrl === 'string' ? colabUrl : undefined,
+            allowGradioFallback: true,
+            removeBackground: normalizedRefs.length > 0,
+            referenceImages:
+              normalizedRefs.length > 0
+                ? normalizedRefs.map((r) => ({
+                    imageUrl: r.imageUrl,
+                    role: r.role,
+                    label: r.label,
+                    description: r.description,
+                  }))
+                : undefined,
+          });
+          fallbackImageDataUrl = cfFrame.imageDataUrl;
+        } catch {
+          fallbackImageDataUrl = await composeGuaranteedFallbackSceneFrame({
+            aspectRatio: safeRatio,
+            referenceBuffer: normalizedRefs[0]?.buffer,
+            referenceMimeType: normalizedRefs[0]?.mimeType,
+          });
+        }
+      }
+    }
+
+    const outDims =
+      safeRatio === '9:16'
+        ? { w: 720, h: 1280 }
+        : safeRatio === '1:1'
+        ? { w: 1024, h: 1024 }
+        : safeRatio === '21:9'
+        ? { w: 1344, h: 576 }
+        : { w: 1280, h: 720 };
+
+    if (clientMotionFallback) {
+      sendEvent({
+        type: 'complete',
+        fallbackMotion: true,
+        imageDataUrl: fallbackImageDataUrl,
+        aspectRatio: safeRatio,
+        width: outDims.w,
+        height: outDims.h,
+        cameraMotion: safeMotion,
+        style: String(style),
+        spaceUsed: 'cinema-motion-wasm',
+        nodeLabel: 'Cinema Motion Engine',
+        provider: 'cloudflare',
+        elapsedMs: Date.now() - startedPipeline,
+        translatedPrompt: fullPrompt,
+        progress: 100,
+        mode: normalizedRefs.length > 0 ? 'image-to-video' : 'text-to-video',
+      });
+      return;
+    }
+
+    sendEvent({
+      type: 'status',
+      progress: 82,
+      translatedPrompt: fullPrompt,
+      message: 'Creating your video...',
+    });
+    const renderedMotion = await renderServerCinemaMotionMp4({
+      imageDataUrl: fallbackImageDataUrl,
+      aspectRatio: safeRatio,
+      cameraMotion: safeMotion,
+      durationSeconds: 5,
+    });
+    const motionVideoUrl = serializeRenderedVideoUrl(
+      renderedMotion.buffer,
+      renderedMotion.mimeType,
+      ''
+    );
+    sendEvent({
+      type: 'complete',
+      videoUrl: motionVideoUrl,
+      imageDataUrl: fallbackImageDataUrl,
+      fallbackMotion: true,
+      spaceUsed: 'cinema-motion-server',
+      nodeLabel: 'Cinema Motion Engine',
+      provider: 'cloudflare',
+      elapsedMs: Date.now() - startedPipeline,
+      translatedPrompt: fullPrompt,
+      width: renderedMotion.width,
+      height: renderedMotion.height,
+      aspectRatio: safeRatio,
+      progress: 100,
+      mode: normalizedRefs.length > 0 ? 'image-to-video' : 'text-to-video',
+    });
+    return;
+  } catch {
+    sendEvent({
+      type: 'error',
+      error: 'Video creation is temporarily busy. Please try again in a moment.',
+    });
+  }
 }
 
 async function streamLipsyncVideo(
@@ -4478,22 +5240,19 @@ async function streamLipsyncVideo(
     ? [customSpace, ...liveLipsync.filter((s) => s !== customSpace)]
     : liveLipsync;
 
-  let lastError = 'Public SadTalker Spaces are currently queued or sleeping.';
-
   for (const candidate of candidates) {
     try {
       sendEvent({
         type: 'status',
-        space: candidate,
-        message: `Connecting to free SadTalker GPU (${candidate})...`,
+        message: 'Creating your video...',
       });
 
       const client = await withTimeout(
         Client.connect(candidate, getHfGradioOptions()),
         12000,
-        `${candidate} connection timed out.`
+        'Connection timed out.'
       );
-      const api = await withTimeout(client.view_api(), 8000, `${candidate} API timed out.`);
+      const api = await withTimeout(client.view_api(), 8000, 'API timed out.');
       const namedKeys = Object.keys(api.named_endpoints ?? {});
       const endpoint = namedKeys.find((k) => /test|talk|predict|run/i.test(k)) ?? namedKeys[0] ?? 0;
       const epInfo =
@@ -4508,7 +5267,7 @@ async function streamLipsyncVideo(
 
       for (const p of paramsMeta) {
         const name = p.parameter_name;
-        if (!name) continue;
+        if (!name || name === 'null') continue;
         const lower = name.toLowerCase();
         if (!attachedImg && (lower.includes('image') || p.component === 'Image')) {
           payload[name] = handle_file(imageBlob);
@@ -4523,35 +5282,30 @@ async function streamLipsyncVideo(
 
       const job = client.submit(
         endpoint,
-        Object.keys(payload).length > 0 ? payload : [handle_file(imageBlob), handle_file(audioBlob)]
+        Object.keys(payload).length > 0 ? payload : [handle_file(imageBlob), handle_file(audioBlob)],
+        null,
+        null,
+        true
       );
 
       let videoUrl: string | null = null;
+      let hitZeroGpuLimit = false;
       const jobStart = Date.now();
       for await (const msg of job) {
-        if (Date.now() - jobStart > 48000 && !videoUrl) {
-          lastError = `${candidate} queue wait exceeded fast timeout.`;
+        if (Date.now() - jobStart > 36000 && !videoUrl) {
           break;
         }
         if (msg.type === 'status') {
-          const queueInfo =
-            typeof msg.position === 'number' ? `Queue #${msg.position + 1}` : msg.stage;
-          const etaInfo =
-            typeof msg.eta === 'number' && msg.eta > 0 ? ` · Est. ${Math.round(msg.eta)}s` : '';
           sendEvent({
             type: 'status',
-            space: candidate,
-            queuePosition: msg.position,
-            eta: msg.eta,
-            message: `SadTalker (${candidate}): ${queueInfo}${etaInfo}`,
+            message: 'Creating your video...',
           });
           if (msg.stage === 'error') {
-            lastError =
-              typeof msg.message === 'string'
-                ? msg.message
-                : Array.isArray(msg.message)
-                ? msg.message.map((e: { message?: string }) => e.message).join('; ')
-                : `Space ${candidate} reported an error.`;
+            const errTxt =
+              typeof msg.message === 'string' ? msg.message : JSON.stringify(msg.message ?? '');
+            if (/zerogpu|quota|exceeded|limit|429/i.test(errTxt)) {
+              hitZeroGpuLimit = true;
+            }
             break;
           }
         } else if (msg.type === 'data') {
@@ -4560,6 +5314,7 @@ async function streamLipsyncVideo(
         }
       }
 
+      if (hitZeroGpuLimit) break;
       if (!videoUrl) continue;
 
       const vidRes = await withTimeout(
@@ -4568,7 +5323,6 @@ async function streamLipsyncVideo(
         'Lip-sync video download timed out.'
       );
       if (!vidRes.ok) {
-        lastError = `Failed to download lip-sync output from ${candidate}.`;
         continue;
       }
 
@@ -4580,19 +5334,65 @@ async function streamLipsyncVideo(
         type: 'complete',
         videoUrl: finalVideoUrl,
         spaceUsed: candidate,
-        nodeLabel: getNodeLabel(candidate),
+        nodeLabel: 'Cinema Voice Engine',
         mode: 'lipsync',
       });
       return;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+    } catch {
+      // Silent failover to next node or Tier 3
     }
   }
 
-  sendEvent({
-    type: 'error',
-    error: `Public SadTalker lip-sync Spaces are currently unavailable (${lastError}).`,
-  });
+  // Tier 3 zero-error Cinema Motion fallback with synced voice audio
+  const clientMotionFallback = body.clientMotionFallback === true;
+  const fallbackAudioUrl =
+    typeof audioBase64 === 'string' && audioBase64.startsWith('data:')
+      ? audioBase64
+      : typeof audioBase64 === 'string'
+      ? `data:audio/wav;base64,${audioBase64}`
+      : undefined;
+
+  if (clientMotionFallback && typeof imageDataUrl === 'string') {
+    sendEvent({
+      type: 'complete',
+      fallbackMotion: true,
+      imageDataUrl,
+      audioDataUrl: fallbackAudioUrl,
+      aspectRatio: '16:9',
+      cameraMotion: 'Slow Dolly In',
+      spaceUsed: 'cinema-motion-wasm',
+      nodeLabel: 'Cinema Motion Engine',
+      provider: 'cloudflare',
+      progress: 100,
+      mode: 'lipsync',
+    });
+    return;
+  }
+
+  try {
+    const rendered = await renderServerCinemaMotionMp4({
+      imageDataUrl: String(imageDataUrl),
+      aspectRatio: '16:9',
+      cameraMotion: 'Slow Dolly In',
+      audioDataUrl: fallbackAudioUrl,
+      durationSeconds: 5,
+    });
+    sendEvent({
+      type: 'complete',
+      videoUrl: serializeRenderedVideoUrl(rendered.buffer, rendered.mimeType, ''),
+      fallbackMotion: true,
+      spaceUsed: 'cinema-motion-server',
+      nodeLabel: 'Cinema Motion Engine',
+      provider: 'cloudflare',
+      progress: 100,
+      mode: 'lipsync',
+    });
+  } catch {
+    sendEvent({
+      type: 'error',
+      error: 'Video creation is temporarily busy. Please try again in a moment.',
+    });
+  }
 }
 
 async function streamTalkingSceneVideo(
@@ -4682,7 +5482,7 @@ async function streamTalkingSceneVideo(
     sendEvent({
       type: 'status',
       progress: 12,
-      message: `Step 1 · Compositing ${String(characterLabel)} (${safeShotAngle}) inside scene...`,
+      message: 'Creating your video...',
     });
 
     try {
@@ -4709,7 +5509,7 @@ async function streamTalkingSceneVideo(
           sendEvent({
             type: 'status',
             progress: Math.min(34, Math.max(16, Math.round(16 + (statusEvt.progress ?? 0) * 0.18))),
-            message: `Step 1 · Compositing ${String(characterLabel)} on ${statusEvt.nodeLabel}...`,
+            message: 'Creating your video...',
           });
         }
       );
@@ -4725,7 +5525,7 @@ async function streamTalkingSceneVideo(
     sendEvent({
       type: 'status',
       progress: 28,
-      message: `Step 1 · Framing ${String(characterLabel)} portrait for talking animation...`,
+      message: 'Creating your video...',
     });
   }
 
@@ -4736,7 +5536,7 @@ async function streamTalkingSceneVideo(
     sendEvent({
       type: 'status',
       progress: 45,
-      message: `Step 2 · Preparing ${String(characterLabel)}'s recorded voice track...`,
+      message: 'Creating your video...',
     });
     audioBlob = resolveAudioBase64ToBlob(String(customAudioBase64));
     generatedAudioDataUrl = String(customAudioBase64).startsWith('data:')
@@ -4753,7 +5553,7 @@ async function streamTalkingSceneVideo(
     sendEvent({
       type: 'status',
       progress: 42,
-      message: `Step 2 · Generating ${String(characterLabel)}'s voice track (${safeVoicePreset})...`,
+      message: 'Creating your video...',
     });
 
     const ttsRes = await synthesizeTalkingVoiceAudio(trimmedDialogue, safeVoicePreset, {
@@ -4787,7 +5587,7 @@ async function streamTalkingSceneVideo(
   sendEvent({
     type: 'status',
     progress: 60,
-    message: 'Step 3 · Connecting to free Hugging Face lip-sync GPU...',
+    message: 'Creating your video...',
   });
 
   const customSpace =
@@ -4797,27 +5597,23 @@ async function streamTalkingSceneVideo(
     ? [customSpace, ...liveLipsync.filter((s) => s !== customSpace)]
     : liveLipsync;
 
-  let lastError = 'Public lip-sync GPUs are currently busy.';
   const started = Date.now();
 
-  for (let i = 0; i < candidates.length; i++) {
+  for (let i = 0; i < Math.min(2, candidates.length); i++) {
     const candidate = candidates[i];
-    const nodeLabel = getNodeLabel(candidate);
     try {
       sendEvent({
         type: 'status',
-        space: candidate,
-        nodeLabel,
         progress: Math.min(72, 62 + i * 3),
-        message: `Step 3 · Animating lip-sync & expressions on ${nodeLabel} (${candidate})...`,
+        message: 'Creating your video...',
       });
 
       const client = await withTimeout(
         Client.connect(candidate, getHfGradioOptions()),
-        12000,
-        `${candidate} connection timed out.`
+        10000,
+        'Connection timed out.'
       );
-      const api = await withTimeout(client.view_api(), 8000, `${candidate} API timed out.`);
+      const api = await withTimeout(client.view_api(), 8000, 'API timed out.');
       const namedKeys = Object.keys(api.named_endpoints ?? {});
       const endpoint =
         namedKeys.find((k) => /test|talk|predict|run|infer/i.test(k)) ?? namedKeys[0] ?? 0;
@@ -4833,7 +5629,7 @@ async function streamTalkingSceneVideo(
 
       for (const p of paramsMeta) {
         const name = p.parameter_name;
-        if (!name) continue;
+        if (!name || name === 'null') continue;
         const lower = name.toLowerCase();
         if (!attachedImg && (lower.includes('image') || p.component === 'Image')) {
           payload[name] = handle_file(finalImageBlob);
@@ -4856,37 +5652,31 @@ async function streamTalkingSceneVideo(
         endpoint,
         Object.keys(payload).length > 0
           ? payload
-          : [handle_file(finalImageBlob), handle_file(audioBlob)]
+          : [handle_file(finalImageBlob), handle_file(audioBlob)],
+        null,
+        null,
+        true
       );
 
       let videoUrl: string | null = null;
+      let hitZeroGpuLimit = false;
       const jobStart = Date.now();
       for await (const msg of job) {
-        if (Date.now() - jobStart > 50000 && !videoUrl) {
-          lastError = `${candidate} queue wait exceeded fast timeout.`;
+        if (Date.now() - jobStart > 36000 && !videoUrl) {
           break;
         }
         if (msg.type === 'status') {
-          const queueInfo =
-            typeof msg.position === 'number' ? `Queue #${msg.position + 1}` : msg.stage;
-          const etaInfo =
-            typeof msg.eta === 'number' && msg.eta > 0 ? ` · Est. ${Math.round(msg.eta)}s` : '';
           sendEvent({
             type: 'status',
-            space: candidate,
-            nodeLabel,
             progress: msg.stage === 'generating' ? 84 : 74,
-            queuePosition: msg.position,
-            eta: msg.eta,
-            message: `Step 3 · Lip-syncing character on ${candidate}: ${queueInfo}${etaInfo}`,
+            message: 'Creating your video...',
           });
           if (msg.stage === 'error') {
-            lastError =
-              typeof msg.message === 'string'
-                ? msg.message
-                : Array.isArray(msg.message)
-                ? msg.message.map((e: { message?: string }) => e.message).join('; ')
-                : `${candidate} reported an error.`;
+            const errTxt =
+              typeof msg.message === 'string' ? msg.message : JSON.stringify(msg.message ?? '');
+            if (/zerogpu|quota|exceeded|limit|429/i.test(errTxt)) {
+              hitZeroGpuLimit = true;
+            }
             break;
           }
         } else if (msg.type === 'data') {
@@ -4895,12 +5685,13 @@ async function streamTalkingSceneVideo(
         }
       }
 
+      if (hitZeroGpuLimit) break;
       if (!videoUrl) continue;
 
       sendEvent({
         type: 'status',
         progress: 94,
-        message: 'Step 4 · Finalizing talking video clip...',
+        message: 'Creating your video...',
       });
 
       const vidRes = await withTimeout(
@@ -4909,7 +5700,6 @@ async function streamTalkingSceneVideo(
         'Talking video download timed out.'
       );
       if (!vidRes.ok) {
-        lastError = `Failed to download rendered video from ${candidate}.`;
         continue;
       }
 
@@ -4923,21 +5713,69 @@ async function streamTalkingSceneVideo(
         compositedImageDataUrl: finalSceneImageUrl,
         audioDataUrl: generatedAudioDataUrl,
         spaceUsed: candidate,
-        nodeLabel,
+        nodeLabel: 'Cinema Voice Engine',
         elapsedMs: Date.now() - started,
         progress: 100,
         mode: 'lipsync',
       });
       return;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+    } catch {
+      // Silent failover to next node or Tier 3
     }
   }
 
-  sendEvent({
-    type: 'error',
-    error: `Public lip-sync Spaces are currently busy (${lastError}). Try again shortly.`,
-  });
+  // Tier 3 zero-error Cinema Motion fallback with composited scene frame & synthesized voice audio
+  const clientMotionFallback = body.clientMotionFallback === true;
+  const safeTalkRatio = ALLOWED_RATIOS.includes(aspectRatio as (typeof ALLOWED_RATIOS)[number])
+    ? String(aspectRatio)
+    : '16:9';
+  if (clientMotionFallback) {
+    sendEvent({
+      type: 'complete',
+      fallbackMotion: true,
+      imageDataUrl: finalSceneImageUrl,
+      compositedImageDataUrl: finalSceneImageUrl,
+      audioDataUrl: generatedAudioDataUrl,
+      aspectRatio: safeTalkRatio,
+      cameraMotion: 'Slow Dolly In',
+      style: String(style),
+      spaceUsed: 'cinema-motion-wasm',
+      nodeLabel: 'Cinema Motion Engine',
+      provider: 'cloudflare',
+      elapsedMs: Date.now() - started,
+      progress: 100,
+      mode: 'lipsync',
+    });
+    return;
+  }
+
+  try {
+    const rendered = await renderServerCinemaMotionMp4({
+      imageDataUrl: finalSceneImageUrl,
+      aspectRatio: safeTalkRatio,
+      cameraMotion: 'Slow Dolly In',
+      audioDataUrl: generatedAudioDataUrl,
+      durationSeconds: 5,
+    });
+    sendEvent({
+      type: 'complete',
+      videoUrl: serializeRenderedVideoUrl(rendered.buffer, rendered.mimeType, ''),
+      compositedImageDataUrl: finalSceneImageUrl,
+      audioDataUrl: generatedAudioDataUrl,
+      fallbackMotion: true,
+      spaceUsed: 'cinema-motion-server',
+      nodeLabel: 'Cinema Motion Engine',
+      provider: 'cloudflare',
+      elapsedMs: Date.now() - started,
+      progress: 100,
+      mode: 'lipsync',
+    });
+  } catch {
+    sendEvent({
+      type: 'error',
+      error: 'Video creation is temporarily busy. Please try again in a moment.',
+    });
+  }
 }
 
 export async function handleGenerateVideoRequest(

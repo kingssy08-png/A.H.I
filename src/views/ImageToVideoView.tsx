@@ -110,7 +110,7 @@ export function ImageToVideoView({
     setActiveSpace(spaceId);
     setAttemptInfo({ attempt: 1, total: 3 });
     setTranslatedPrompt(null);
-    setQueueStatus(`Connecting to free community GPU (${spaceId})...`);
+    setQueueStatus('Creating your video...');
 
     try {
       const result = await generateHfVideoClip(
@@ -143,7 +143,7 @@ export function ImageToVideoView({
       setQueueStatus(`Rendered clean watermark-free MP4${secs} via ${result.nodeLabel}`);
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Hugging Face Image-to-Video Space is busy.'
+        err instanceof Error ? err.message : 'Video creation is temporarily busy. Please try again.'
       );
       setQueueStatus(null);
       setQueueProgress(0);

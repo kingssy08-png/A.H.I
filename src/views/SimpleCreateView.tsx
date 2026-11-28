@@ -16,6 +16,7 @@ import {
   Plus,
   RotateCcw,
   Scissors,
+  SlidersHorizontal,
   Sparkles,
   Square,
   Trash2,
@@ -41,6 +42,7 @@ import type {
   CameraMotion,
   CharacterProfile,
   GeminiVoiceName,
+  ImageQualityTier,
   ReferenceRole,
   StudioCreation,
   VideoReferenceItem,
@@ -74,6 +76,7 @@ interface SimpleCreateViewProps {
 
 type SimpleStyleLabel =
   | 'Warm Storybook 3D'
+  | 'Enchanted Storybook'
   | '3D Animation / Kids'
   | 'Anime'
   | 'Cinematic Film'
@@ -95,6 +98,7 @@ const REFERENCE_ROLES: ReferenceRole[] = [
 
 const STYLE_MAP: Record<SimpleStyleLabel, AnimationStyle> = {
   'Warm Storybook 3D': 'Warm Storybook 3D',
+  'Enchanted Storybook': 'Enchanted Storybook',
   '3D Animation / Kids': '3D Pixar-Style Cartoon',
   Anime: 'Anime',
   'Cinematic Film': 'Cinematic Film',
@@ -103,6 +107,12 @@ const STYLE_MAP: Record<SimpleStyleLabel, AnimationStyle> = {
   'Product Ad': 'Product Ad',
   Educational: 'Educational',
 };
+
+const QUALITY_OPTIONS: Array<{ value: ImageQualityTier; label: string }> = [
+  { value: 'standard', label: 'Standard' },
+  { value: 'high', label: 'High' },
+  { value: 'ultra', label: 'Ultra' },
+];
 
 const CAMERA_MAP: Record<SimpleCameraLabel, CameraMotion> = {
   Auto: 'Auto',
@@ -186,6 +196,14 @@ const SCENE_LIBRARY_REFS: Array<{
   defaultRole: ReferenceRole;
   description: string;
 }> = [
+  {
+    id: 'scene-ref-enchanted-glade',
+    label: 'Enchanted Forest Glade',
+    imageUrl: '/src/assets/images/style_enchanted_storybook_1795855536212.jpg',
+    defaultRole: 'Background / Scene',
+    description:
+      'Enchanted fairy-tale woodland glade with golden volumetric sunbeams through mossy ancient trees, fireflies, wildflowers, ferns, and mushrooms',
+  },
   {
     id: 'scene-ref-workshop',
     label: 'Clockwork Workshop',
@@ -344,6 +362,7 @@ export function SimpleCreateView({
   const [sizeLabel, setSizeLabel] = useState<SimpleSizeLabel>(() =>
     aspectRatioToSizeLabel(defaultAspectRatio)
   );
+  const [qualityTier, setQualityTier] = useState<ImageQualityTier>('high');
 
   useEffect(() => {
     setSizeLabel(aspectRatioToSizeLabel(defaultAspectRatio));
@@ -405,6 +424,10 @@ export function SimpleCreateView({
     url: string;
     prompt: string;
     aspectRatio: AspectRatio;
+    width?: number;
+    height?: number;
+    qualityLabel?: string;
+    modelLabel?: string;
     isTalking?: boolean;
     dialogueSummary?: string;
     compositedPreviewUrl?: string;
@@ -842,13 +865,16 @@ export function SimpleCreateView({
     styleLabel?: SimpleStyleLabel;
     cameraLabel?: SimpleCameraLabel;
     sizeLabel?: SimpleSizeLabel;
+    qualityTier?: ImageQualityTier;
     refs?: VideoReferenceItem[];
     animateExactFrame?: boolean;
   }) => {
+    if (isGenerating) return;
     const activeMode = overrides?.mode ?? mode;
     const activeStyle = overrides?.styleLabel ?? styleLabel;
     const activeCamera = overrides?.cameraLabel ?? cameraLabel;
     const activeSize = overrides?.sizeLabel ?? sizeLabel;
+    const activeQuality = overrides?.qualityTier ?? qualityTier;
     const mappedStyle = STYLE_MAP[activeStyle];
     const mappedCamera = CAMERA_MAP[activeCamera];
     const mappedRatio = SIZE_MAP[activeSize];
@@ -1022,6 +1048,7 @@ export function SimpleCreateView({
             style: mappedStyle,
             aspectRatio: mappedRatio,
             engine: 'flux-schnell',
+            quality: activeQuality,
             imageDataUrl: activeRefs[0]?.imageUrl,
             removeBackground: activeRefs.length > 0 ? removeRefBackground : false,
             referenceImages:
@@ -1037,16 +1064,22 @@ export function SimpleCreateView({
           },
           (evt) => {
             if (typeof evt.progress === 'number') setProgress(evt.progress);
-            if (evt.type === 'status' && evt.message) {
-              setStatusMessage(evt.message);
+            if (evt.type === 'status') {
+              setStatusMessage('Creating your image...');
             }
           }
         );
+        const qLabel =
+          QUALITY_OPTIONS.find((q) => q.value === (res.quality ?? activeQuality))?.label ?? 'High';
         setResult({
           type: 'image',
           url: res.imageDataUrl,
           prompt: rawPrompt,
           aspectRatio: mappedRatio,
+          width: res.width,
+          height: res.height,
+          qualityLabel: qLabel,
+          modelLabel: res.modelLabel,
         });
         onSaveCreation?.({
           id: `cre-${Date.now()}`,
@@ -1080,17 +1113,7 @@ export function SimpleCreateView({
           (evt) => {
             if (typeof evt.progress === 'number') setProgress(evt.progress);
             if (evt.type === 'status') {
-              if (evt.message && evt.message.startsWith('Enhancing ')) {
-                setStatusMessage('Enhancing camera prompt...');
-              } else {
-                setStatusMessage(
-                  typeof evt.queuePosition === 'number' && evt.queuePosition > 0
-                    ? `Connecting to free open-source GPU (queue #${evt.queuePosition + 1})...`
-                    : (evt.progress ?? 0) >= 55
-                    ? 'Rendering frames...'
-                    : evt.message || 'Connecting to free open-source GPU...'
-                );
-              }
+              setStatusMessage('Creating your video...');
             }
           }
         );
@@ -1399,11 +1422,36 @@ export function SimpleCreateView({
               </div>
             )}
 
+            <div className="flex flex-wrap items-center justify-center gap-2 text-xs text-[#94A3B8] tabular-nums">
+              <span>{result.aspectRatio}</span>
+              {result.width && result.height && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    {result.width}×{result.height}
+                  </span>
+                </>
+              )}
+              {result.qualityLabel && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>{result.qualityLabel} Quality</span>
+                </>
+              )}
+              {result.modelLabel && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>{result.modelLabel}</span>
+                </>
+              )}
+            </div>
+
             {/* Clean Action Buttons Underneath */}
             <div className="flex flex-wrap items-center justify-center gap-3">
               {result.type === 'video' && onAddClipToEpisode ? (
                 <button
                   type="button"
+                  disabled={isGenerating}
                   onClick={() =>
                     onAddClipToEpisode({
                       videoUrl: result.url,
@@ -1411,7 +1459,7 @@ export function SimpleCreateView({
                       dialogue: result.dialogueSummary,
                     })
                   }
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#2DD4BF] hover:bg-[#34D399] text-[#07090E] text-xs font-bold shadow-[0_0_22px_rgba(45,212,191,0.22)] transition-all cursor-pointer"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#2DD4BF] hover:bg-[#34D399] disabled:opacity-45 text-[#07090E] text-xs font-bold shadow-[0_0_22px_rgba(45,212,191,0.22)] transition-all cursor-pointer whitespace-nowrap"
                 >
                   <Film className="w-4 h-4" />
                   Add to Episode
@@ -1419,8 +1467,9 @@ export function SimpleCreateView({
               ) : (
                 <button
                   type="button"
+                  disabled={isGenerating}
                   onClick={handleAnimateThis}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#2DD4BF] hover:bg-[#34D399] text-[#07090E] text-xs font-bold shadow-[0_0_22px_rgba(45,212,191,0.22)] transition-all cursor-pointer"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#2DD4BF] hover:bg-[#34D399] disabled:opacity-45 text-[#07090E] text-xs font-bold shadow-[0_0_22px_rgba(45,212,191,0.22)] transition-all cursor-pointer whitespace-nowrap"
                 >
                   <Film className="w-4 h-4" />
                   Animate This
@@ -1528,8 +1577,9 @@ export function SimpleCreateView({
                 <button
                   key={ex.id}
                   type="button"
+                  disabled={isGenerating}
                   onClick={() => handleStarterClick(ex)}
-                  className="group text-left bg-[rgba(17,22,33,0.72)] backdrop-blur-2xl border border-white/10 hover:border-[#2DD4BF]/45 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_0_24px_rgba(45,212,191,0.14)] rounded-2xl overflow-hidden transition-all cursor-pointer flex flex-col"
+                  className="group text-left bg-[rgba(17,22,33,0.72)] backdrop-blur-2xl border border-white/10 hover:border-[#2DD4BF]/45 disabled:opacity-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_0_24px_rgba(45,212,191,0.14)] rounded-2xl overflow-hidden transition-all cursor-pointer flex flex-col"
                 >
                   <div className="aspect-[4/3] bg-[#07090E] relative overflow-hidden">
                     <img
@@ -2516,8 +2566,8 @@ export function SimpleCreateView({
                 </select>
               </label>
 
-              {/* Size Pill */}
-              <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#07090E]/75 hover:border-[#2DD4BF]/35 border border-white/10 text-xs text-[#94A3B8] cursor-pointer transition-colors">
+              {/* Size Selector */}
+              <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#07090E]/75 hover:border-[#2DD4BF]/35 border border-white/10 text-xs text-[#94A3B8] cursor-pointer transition-colors whitespace-nowrap">
                 <Monitor className="w-3.5 h-3.5 text-[#2DD4BF] shrink-0" />
                 <span className="text-[#64748B]">Size:</span>
                 <select
@@ -2532,6 +2582,26 @@ export function SimpleCreateView({
                   ))}
                 </select>
               </label>
+
+              {/* Quality Selector */}
+              {mode === 'image' && (
+                <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#07090E]/75 hover:border-[#2DD4BF]/35 border border-white/10 text-xs text-[#94A3B8] cursor-pointer transition-colors whitespace-nowrap">
+                  <SlidersHorizontal className="w-3.5 h-3.5 text-[#2DD4BF] shrink-0" />
+                  <span className="text-[#64748B]">Quality:</span>
+                  <select
+                    value={qualityTier}
+                    onChange={(e) => setQualityTier(e.target.value as ImageQualityTier)}
+                    aria-label="Output quality"
+                    className="bg-transparent text-[#F8FAFC] font-medium focus:outline-none cursor-pointer"
+                  >
+                    {QUALITY_OPTIONS.map((q) => (
+                      <option key={q.value} value={q.value} className="bg-[#0B0F18] text-[#F8FAFC]">
+                        {q.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
             </div>
           </form>
         </div>

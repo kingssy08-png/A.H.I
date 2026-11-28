@@ -46,6 +46,7 @@ service cloud.firestore {
         && style.size() <= 40
         && style in [
           'Warm Storybook 3D',
+          'Enchanted Storybook',
           '3D Pixar-Style Cartoon',
           'Anime',
           'Cinematic Film',

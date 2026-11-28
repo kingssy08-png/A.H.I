@@ -106,11 +106,7 @@ export function TextToImageView({
     setActiveSpace(customSpaceId);
     setAttemptInfo({ attempt: 1, total: 3 });
     setTranslatedPrompt(null);
-    setQueueMessage(
-      engine === 'flux-schnell'
-        ? 'Instant zero-queue render via Cloudflare Workers AI (@cf/black-forest-labs/flux-1-schnell)...'
-        : `Connecting to SD 3.5 Turbo / SDXL Node (${customSpaceId})...`
-    );
+    setQueueMessage('Creating your image...');
 
     try {
       const res = await generateHfImage(
@@ -152,7 +148,7 @@ export function TextToImageView({
       );
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Hugging Face image Space is temporarily busy.'
+        err instanceof Error ? err.message : 'Image creation is temporarily busy. Please try again.'
       );
       setQueueMessage(null);
       setQueueProgress(0);

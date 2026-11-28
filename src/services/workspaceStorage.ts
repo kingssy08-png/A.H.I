@@ -34,6 +34,7 @@ import type {
 // Blueprint-synchronized constants (must match firebase-blueprint.json & firestore.rules verbatim)
 const VALID_STYLES: AnimationStyle[] = [
   'Warm Storybook 3D',
+  'Enchanted Storybook',
   '3D Pixar-Style Cartoon',
   'Anime',
   'Cinematic Film',

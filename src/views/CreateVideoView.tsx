@@ -267,7 +267,7 @@ export function CreateVideoView({
     setActiveVideoSpace(videoSpaceId);
     setVideoAttemptInfo({ attempt: 1, total: 3 });
     setVideoTranslatedPrompt(null);
-    setVideoQueueStatus(`Connecting to free community GPU (${videoSpaceId})...`);
+    setVideoQueueStatus('Creating your video...');
     try {
       const result = await generateHfVideoClip(
         {
@@ -313,7 +313,7 @@ export function CreateVideoView({
       const secs = result.elapsedMs ? ` in ${(result.elapsedMs / 1000).toFixed(1)}s` : '';
       setVideoQueueStatus(`Rendered clean watermark-free clip${secs} via ${result.nodeLabel}`);
     } catch (err) {
-      setErrorBanner(err instanceof Error ? err.message : 'Hugging Face video generation failed.');
+      setErrorBanner(err instanceof Error ? err.message : 'Video creation is temporarily busy. Please try again.');
       setVideoQueueStatus(null);
       setVideoQueueProgress(0);
     } finally {
@@ -517,7 +517,7 @@ export function CreateVideoView({
     setActiveVideoSpace(videoSpaceId);
     setVideoAttemptInfo({ attempt: 1, total: 3 });
     setVideoTranslatedPrompt(null);
-    setVideoQueueStatus(`Connecting to free community GPU (${videoSpaceId})...`);
+    setVideoQueueStatus('Creating your video...');
 
     try {
       const result = await generateHfVideoClip(
@@ -553,7 +553,7 @@ export function CreateVideoView({
       const secs = result.elapsedMs ? ` in ${(result.elapsedMs / 1000).toFixed(1)}s` : '';
       setVideoQueueStatus(`Rendered clean watermark-free clip${secs} via ${result.nodeLabel}`);
     } catch (err) {
-      setErrorBanner(err instanceof Error ? err.message : 'Hugging Face video generation failed.');
+      setErrorBanner(err instanceof Error ? err.message : 'Video creation is temporarily busy. Please try again.');
       setVideoQueueStatus(null);
       setVideoQueueProgress(0);
     } finally {

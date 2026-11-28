@@ -67,6 +67,7 @@
           "description": "Series visual style.",
           "enum": [
             "Warm Storybook 3D",
+            "Enchanted Storybook",
             "3D Pixar-Style Cartoon",
             "Anime",
             "Cinematic Film",
@@ -185,6 +186,7 @@
           "description": "Visual style preset.",
           "enum": [
             "Warm Storybook 3D",
+            "Enchanted Storybook",
             "3D Pixar-Style Cartoon",
             "Anime",
             "Cinematic Film",
@@ -300,6 +302,7 @@
           "description": "Preferred visual style.",
           "enum": [
             "Warm Storybook 3D",
+            "Enchanted Storybook",
             "3D Pixar-Style Cartoon",
             "Anime",
             "Cinematic Film",
